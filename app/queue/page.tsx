@@ -17,6 +17,69 @@ function hasUoMRisk(exception: Exception): boolean {
   return detectUoMAmbiguity(exception.rowData.description)
 }
 
+// Convert exception type to operator-first language
+function getOperationalIssue(exception: ExceptionWithRisk): { title: string; subline: string | null } {
+  const { exception_type, rowData, days_late } = exception
+  
+  // Helper to truncate description
+  const getDescriptionSnippet = (desc: string | null | undefined, maxLength: number = 60): string | null => {
+    if (!desc || desc.trim() === '') return null
+    const trimmed = desc.trim()
+    return trimmed.length > maxLength ? trimmed.substring(0, maxLength) + '...' : trimmed
+  }
+  
+  switch (exception_type) {
+    case 'LATE_PO':
+      // Use description snippet if available, otherwise omit subline
+      const lateDesc = getDescriptionSnippet(rowData.description)
+      return {
+        title: 'Shipment overdue, not received',
+        subline: lateDesc ? `Description: ${lateDesc}` : null
+      }
+    case 'PARTIAL_OPEN':
+      // Prefer receipt date template, fallback to description
+      if (rowData.receipt_date && rowData.receipt_date.trim() !== '') {
+        return {
+          title: 'Line remains open after receipt',
+          subline: `Receipt posted on ${rowData.receipt_date}, line still open`
+        }
+      } else {
+        const partialDesc = getDescriptionSnippet(rowData.description)
+        return {
+          title: 'Line remains open after receipt',
+          subline: partialDesc ? `Description: ${partialDesc}` : null
+        }
+      }
+    case 'ZOMBIE_PO':
+      // Use description snippet if available, otherwise omit subline
+      const zombieDesc = getDescriptionSnippet(rowData.description)
+      return {
+        title: 'Line open past expected closure',
+        subline: zombieDesc ? `Description: ${zombieDesc}` : null
+      }
+    case 'UOM_AMBIGUITY':
+      // UoM is about description ambiguity, so always use description snippet
+      const uomDesc = getDescriptionSnippet(rowData.description)
+      return {
+        title: 'Ambiguous item measurement',
+        subline: uomDesc ? `Description: ${uomDesc}` : null
+      }
+    default:
+      return {
+        title: 'Operational issue detected',
+        subline: null
+      }
+  }
+}
+
+// Get operator-meaningful badge text
+function getRiskDriverBadge(hasUoMRisk: boolean): string | null {
+  if (hasUoMRisk) {
+    return 'Interpretation risk'
+  }
+  return null
+}
+
 // Helper to get exception priority for sorting (lower number = higher priority)
 function getExceptionPriority(exceptionType: ExceptionType): number {
   switch (exceptionType) {
@@ -187,8 +250,8 @@ export default function QueuePage() {
   // Loading state
   if (rows === null) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-600">Loading...</div>
+      <div className="min-h-screen bg-neutral-50 flex items-center justify-center">
+        <div className="text-neutral-600">Loading...</div>
       </div>
     )
   }
@@ -196,14 +259,14 @@ export default function QueuePage() {
   // Empty state
   if (rows.length === 0) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="max-w-md w-full bg-white rounded-lg border border-gray-200 shadow-sm p-6 text-center">
-          <div className="text-gray-600 mb-4">No CSV data found</div>
+      <div className="min-h-screen bg-neutral-50 flex items-center justify-center px-6">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-sm px-12 py-16 text-center">
+          <div className="text-neutral-700 mb-6">No CSV data found</div>
           <Link 
             href="/" 
-            className="inline-block px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded border border-blue-700 transition-colors"
+            className="inline-flex items-center justify-center px-6 py-3 text-sm font-medium text-white bg-neutral-900 hover:bg-neutral-800 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2"
           >
-            Upload a CSV
+            Select CSV file
           </Link>
         </div>
       </div>
@@ -211,35 +274,35 @@ export default function QueuePage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-neutral-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-6">
-          <h1 className="text-2xl font-semibold text-gray-900 mb-4">Exceptions Queue</h1>
+        <div className="bg-white rounded-2xl shadow-sm px-8 py-6 mb-6">
+          <h1 className="text-2xl font-semibold text-neutral-900 mb-2">Exceptions Queue</h1>
           {filename && (
-            <div className="text-sm text-gray-600 mb-4">
+            <div className="text-sm text-neutral-600">
               <span className="font-medium">File:</span> {filename}
             </div>
           )}
         </div>
 
         {/* Triage Summary */}
-        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-6">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">Triage Summary</h2>
+        <div className="bg-white rounded-2xl shadow-sm px-8 py-6 mb-6">
+          <h2 className="text-base font-semibold text-neutral-900 mb-6">Triage Summary</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <button
               onClick={() => {
                 setExceptionTypeFilter('all')
                 setRiskFlagFilter('all')
               }}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+              className={`text-left p-5 rounded-xl transition-all ${
                 exceptionTypeFilter === 'all' && riskFlagFilter === 'all'
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
+                  ? 'bg-neutral-100'
+                  : 'bg-neutral-50 hover:bg-neutral-100'
               }`}
             >
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Total Lines</div>
-              <div className="text-2xl font-bold text-gray-900">{counts.totalLines}</div>
+              <div className="text-xs font-medium text-neutral-500 mb-2">Total Lines</div>
+              <div className="text-2xl font-semibold text-neutral-900">{counts.totalLines}</div>
             </button>
             
             <button
@@ -247,175 +310,184 @@ export default function QueuePage() {
                 setExceptionTypeFilter('all')
                 setRiskFlagFilter('all')
               }}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+              className={`text-left p-5 rounded-xl transition-all ${
                 exceptionTypeFilter === 'all' && riskFlagFilter === 'all'
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
+                  ? 'bg-neutral-100'
+                  : 'bg-neutral-50 hover:bg-neutral-100'
               }`}
             >
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Total Exceptions</div>
-              <div className="text-2xl font-bold text-red-700">{counts.totalExceptions}</div>
+              <div className="text-xs font-medium text-neutral-500 mb-2">Total Exceptions</div>
+              <div className={`text-2xl font-semibold ${counts.totalExceptions === 0 ? 'text-neutral-600' : 'text-red-600'}`}>
+                {counts.totalExceptions}
+              </div>
             </button>
             
             <button
               onClick={() => handleKPIClick('LATE_PO')}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+              className={`text-left p-5 rounded-xl transition-all ${
                 exceptionTypeFilter === 'LATE_PO'
-                  ? 'border-red-500 bg-red-50'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
+                  ? 'bg-red-50'
+                  : 'bg-neutral-50 hover:bg-neutral-100'
               }`}
             >
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Late</div>
-              <div className="text-2xl font-bold text-red-700">{counts.lateCount}</div>
+              <div className="text-xs font-medium text-neutral-500 mb-2">Overdue</div>
+              <div className={`text-2xl font-semibold ${counts.lateCount === 0 ? 'text-neutral-600' : 'text-red-600'}`}>
+                {counts.lateCount}
+              </div>
             </button>
             
             <button
               onClick={() => handleKPIClick('PARTIAL_OPEN')}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+              className={`text-left p-5 rounded-xl transition-all ${
                 exceptionTypeFilter === 'PARTIAL_OPEN'
-                  ? 'border-yellow-500 bg-yellow-50'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
+                  ? 'bg-amber-50'
+                  : 'bg-neutral-50 hover:bg-neutral-100'
               }`}
             >
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Partial Open</div>
-              <div className="text-2xl font-bold text-yellow-700">{counts.partialCount}</div>
+              <div className="text-xs font-medium text-neutral-500 mb-2">Open After Receipt</div>
+              <div className={`text-2xl font-semibold ${counts.partialCount === 0 ? 'text-neutral-600' : 'text-amber-600'}`}>
+                {counts.partialCount}
+              </div>
             </button>
             
             <button
               onClick={() => handleKPIClick('ZOMBIE_PO')}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+              className={`text-left p-5 rounded-xl transition-all ${
                 exceptionTypeFilter === 'ZOMBIE_PO'
-                  ? 'border-gray-500 bg-gray-50'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
+                  ? 'bg-neutral-100'
+                  : 'bg-neutral-50 hover:bg-neutral-100'
               }`}
             >
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Zombie</div>
-              <div className="text-2xl font-bold text-gray-700">{counts.zombieCount}</div>
+              <div className="text-xs font-medium text-neutral-500 mb-2">Past Expected Closure</div>
+              <div className={`text-2xl font-semibold ${counts.zombieCount === 0 ? 'text-neutral-600' : 'text-neutral-700'}`}>
+                {counts.zombieCount}
+              </div>
             </button>
             
             <button
               onClick={() => handleKPIClick('UOM_AMBIGUITY')}
-              className={`text-left p-4 rounded-lg border-2 transition-colors ${
+              className={`text-left p-5 rounded-xl transition-all ${
                 riskFlagFilter === 'UOM_AMBIGUITY'
-                  ? 'border-orange-500 bg-orange-50'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
+                  ? 'bg-orange-50'
+                  : 'bg-neutral-50 hover:bg-neutral-100'
               }`}
             >
-              <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Risk Flags</div>
-              <div className="text-2xl font-bold text-orange-700">{counts.uomRiskCount}</div>
-              <div className="text-xs text-gray-500 mt-1">UoM Ambiguity</div>
+              <div className="text-xs font-medium text-neutral-500 mb-2">Ambiguous item measurement</div>
+              <div className={`text-2xl font-semibold ${counts.uomRiskCount === 0 ? 'text-neutral-600' : 'text-orange-600'}`}>
+                {counts.uomRiskCount}
+              </div>
+              <div className="text-xs text-neutral-500 mt-1">Description contains mixed or unclear measurements</div>
             </button>
           </div>
         </div>
 
         {exceptions.length > 0 ? (
-          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between flex-wrap gap-4">
-              <h2 className="text-base font-semibold text-gray-900">
+          <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-8 py-5 border-b border-neutral-200 flex items-center justify-between flex-wrap gap-4">
+              <h2 className="text-base font-semibold text-neutral-900">
                 Exceptions
               </h2>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                 <div>
                   <label htmlFor="exception-type-filter" className="sr-only">Filter by exception type</label>
                   <select
                     id="exception-type-filter"
                     value={exceptionTypeFilter}
                     onChange={(e) => setExceptionTypeFilter(e.target.value as ExceptionTypeFilter)}
-                    className="text-sm border border-gray-300 rounded px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="text-sm border border-neutral-300 rounded-lg px-3 py-2 text-neutral-700 bg-white focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900 transition-colors"
                   >
-                    <option value="all">All Types</option>
-                    <option value="LATE_PO">Late PO</option>
-                    <option value="PARTIAL_OPEN">Partial Open</option>
-                    <option value="ZOMBIE_PO">Zombie PO</option>
+                    <option value="all">All Issues</option>
+                    <option value="LATE_PO">Overdue</option>
+                    <option value="PARTIAL_OPEN">Open After Receipt</option>
+                    <option value="ZOMBIE_PO">Past Expected Closure</option>
                   </select>
                 </div>
                 <div>
-                  <label htmlFor="risk-flag-filter" className="sr-only">Filter by risk flag</label>
+                  <label htmlFor="risk-flag-filter" className="sr-only">Filter by risk driver</label>
                   <select
                     id="risk-flag-filter"
                     value={riskFlagFilter}
                     onChange={(e) => setRiskFlagFilter(e.target.value as RiskFlagFilter)}
-                    className="text-sm border border-gray-300 rounded px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="text-sm border border-neutral-300 rounded-lg px-3 py-2 text-neutral-700 bg-white focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900 transition-colors"
                   >
-                    <option value="all">All Risk Flags</option>
-                    <option value="UOM_AMBIGUITY">UoM Ambiguity</option>
+                    <option value="all">All Risk Drivers</option>
+                    <option value="UOM_AMBIGUITY">Interpretation Risk</option>
                   </select>
                 </div>
               </div>
             </div>
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
+              <table className="min-w-full divide-y divide-neutral-200">
+                <thead className="bg-neutral-50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Exception Type
+                    <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
+                      Operational Issue
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Risk
+                    <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
+                      Risk Driver
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
                       PO ID
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
                       Line ID
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
                       Supplier
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
                       Due Date
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
                       Days Late
                     </th>
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
+                <tbody className="bg-white divide-y divide-neutral-200">
                   {filteredAndSortedExceptions.map((exception) => {
-                    const badgeColor = 
-                      exception.exception_type === 'LATE_PO' ? 'bg-red-100 text-red-800' :
-                      exception.exception_type === 'PARTIAL_OPEN' ? 'bg-yellow-100 text-yellow-800' :
-                      exception.exception_type === 'UOM_AMBIGUITY' ? 'bg-blue-100 text-blue-800' :
-                      'bg-gray-100 text-gray-800'
-                    
-                    const badgeText = 
-                      exception.exception_type === 'LATE_PO' ? 'Late PO' :
-                      exception.exception_type === 'PARTIAL_OPEN' ? 'Partial Open' :
-                      exception.exception_type === 'UOM_AMBIGUITY' ? 'UoM Ambiguity' :
-                      'Zombie PO'
+                    const issue = getOperationalIssue(exception)
+                    const riskDriver = getRiskDriverBadge(exception.hasUoMRisk)
                     
                     return (
                       <tr
                         key={exception.id}
                         onClick={() => handleRowClick(exception.id)}
-                        className="hover:bg-blue-50 cursor-pointer transition-colors"
+                        className="hover:bg-neutral-50 cursor-pointer transition-colors"
                       >
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${badgeColor}`}>
-                            {badgeText}
-                          </span>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col">
+                            <div className="text-sm font-medium text-neutral-900">
+                              {issue.title}
+                            </div>
+                            {issue.subline && (
+                              <div className="text-xs text-neutral-500 mt-0.5 truncate">
+                                {issue.subline}
+                              </div>
+                            )}
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          {exception.hasUoMRisk && (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
-                              UoM
+                          {riskDriver ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-medium bg-orange-100 text-orange-700">
+                              {riskDriver}
                             </span>
+                          ) : (
+                            <span className="text-neutral-400">—</span>
                           )}
-                          {!exception.hasUoMRisk && <span className="text-gray-400">—</span>}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-neutral-900">
                           {exception.po_id}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-900">
                           {exception.line_id}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-900">
                           {exception.supplier_name || '—'}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-900">
                           {exception.due_date ? exception.due_date.toLocaleDateString() : '—'}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-neutral-900">
                           {exception.days_late !== null ? `${exception.days_late} days` : '—'}
                         </td>
                       </tr>
@@ -426,9 +498,9 @@ export default function QueuePage() {
             </div>
           </div>
         ) : (
-          <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-6 text-center">
-            <div className="text-gray-600 mb-4">No exceptions found</div>
-            <div className="text-sm text-gray-500">All purchase orders are in good standing.</div>
+          <div className="bg-white rounded-2xl shadow-sm px-12 py-16 text-center">
+            <div className="text-neutral-700 mb-2">No exceptions found</div>
+            <div className="text-sm text-neutral-500">All purchase orders are in good standing.</div>
           </div>
         )}
       </div>

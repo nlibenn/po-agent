@@ -196,31 +196,26 @@ export function deriveExceptions(normalizedRows: NormalizedPORow[], today: Date 
     const id = `${row.po_id}-${row.line_id}`
     const exceptionTypes: ExceptionType[] = []
     
-    // Only check exceptions for open lines
-    if (!row.line_open) {
-      continue
-    }
-    
-    // 1. Late PO: line_open == true AND due_date < today AND receipt_date is empty
-    if (row.due_date && row.due_date < todayNormalized) {
+    // 1. Late PO: requires line_open == true AND due_date < today AND receipt_date is empty
+    if (row.line_open && row.due_date && row.due_date < todayNormalized) {
       const receiptDateEmpty = !row.receipt_date || row.receipt_date.trim() === ''
       if (receiptDateEmpty) {
         exceptionTypes.push('LATE_PO')
       }
     }
     
-    // 2. Partial Open: receipt_date exists AND line_open == true
-    if (row.receipt_date && row.receipt_date.trim() !== '') {
+    // 2. Partial Open: requires line_open == true AND receipt_date exists
+    if (row.line_open && row.receipt_date && row.receipt_date.trim() !== '') {
       exceptionTypes.push('PARTIAL_OPEN')
     }
     
-    // 3. Zombie PO: 60 days past due (due_date < today - 60 days) AND line_open == true
-    if (row.due_date && row.due_date < sixtyDaysAgo) {
+    // 3. Zombie PO: requires line_open == true AND due_date < today - 60 days
+    if (row.line_open && row.due_date && row.due_date < sixtyDaysAgo) {
       exceptionTypes.push('ZOMBIE_PO')
     }
     
-    // 4. UoM Ambiguity: detect dimensional language in description
-    if (detectUoMAmbiguity(row.description)) {
+    // 4. UoM Ambiguity: detect dimensional language in description (works for open AND closed lines)
+    if (row.description && row.description.trim() !== '' && detectUoMAmbiguity(row.description)) {
       exceptionTypes.push('UOM_AMBIGUITY')
     }
     

@@ -35,62 +35,6 @@ function calculateSimilarity(desc1: string, desc2: string): number {
   return union.size > 0 ? intersection.size / union.size : 0
 }
 
-// Global mode: deterministic answers
-function getGlobalAnswer(question: string, allRows: NormalizedPORow[]): string {
-  const lowerQuestion = question.toLowerCase()
-  
-  // Normalize and derive exceptions
-  const today = new Date()
-  const exceptions = deriveExceptions(allRows, today)
-  
-  if (lowerQuestion.includes('how many exception') || lowerQuestion.includes('count')) {
-    return `Found ${exceptions.length} exception${exceptions.length !== 1 ? 's' : ''} across ${allRows.length} PO lines.\n\nBreakdown:\n- Late PO: ${exceptions.filter(e => e.exception_type === 'LATE_PO').length}\n- Partial Open: ${exceptions.filter(e => e.exception_type === 'PARTIAL_OPEN').length}\n- Zombie PO: ${exceptions.filter(e => e.exception_type === 'ZOMBIE_PO').length}\n- UoM Ambiguity: ${exceptions.filter(e => e.exception_type === 'UOM_AMBIGUITY').length}`
-  }
-  
-  if (lowerQuestion.includes('top supplier') || lowerQuestion.includes('supplier')) {
-    const supplierCounts = new Map<string, number>()
-    exceptions.forEach(ex => {
-      const supplier = ex.supplier_name || 'Unknown'
-      supplierCounts.set(supplier, (supplierCounts.get(supplier) || 0) + 1)
-    })
-    const topSuppliers = Array.from(supplierCounts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-    
-    if (topSuppliers.length === 0) {
-      return 'No suppliers with exceptions found.'
-    }
-    
-    return `Top suppliers with exceptions:\n${topSuppliers.map(([name, count], idx) => `${idx + 1}. ${name}: ${count} exception${count !== 1 ? 's' : ''}`).join('\n')}`
-  }
-  
-  if (lowerQuestion.includes('common') || lowerQuestion.includes('most frequent')) {
-    const typeCounts = new Map<string, number>()
-    exceptions.forEach(ex => {
-      if (ex.exception_type) {
-        typeCounts.set(ex.exception_type, (typeCounts.get(ex.exception_type) || 0) + 1)
-      }
-    })
-    const sorted = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1])
-    
-    if (sorted.length === 0) {
-      return 'No exceptions found.'
-    }
-    
-    const typeNames: Record<string, string> = {
-      'LATE_PO': 'Late PO',
-      'PARTIAL_OPEN': 'Partial Open',
-      'ZOMBIE_PO': 'Zombie PO',
-      'UOM_AMBIGUITY': 'UoM Ambiguity',
-    }
-    
-    return `Most common exception types:\n${sorted.map(([type, count], idx) => `${idx + 1}. ${typeNames[type] || type}: ${count} occurrence${count !== 1 ? 's' : ''}`).join('\n')}`
-  }
-  
-  // Default response
-  return `I can help you with:\n- "How many exceptions are there?"\n- "Show me top suppliers with issues"\n- "What's the most common exception type?"\n\nFor case-specific questions, please open an exception detail page first.`
-}
-
 export function CompanionChat() {
   const [isExpanded, setIsExpanded] = useState(false)
   const [input, setInput] = useState('')
@@ -233,7 +177,7 @@ export function CompanionChat() {
         const data = await response.json()
         addMessage({ role: 'assistant', content: data.answer })
       } else {
-        // Global mode: deterministic answers
+        // Global mode: call API with CSV data
         const storedData = sessionStorage.getItem('po_rows')
         if (!storedData) {
           addMessage({
@@ -254,10 +198,63 @@ export function CompanionChat() {
             role: 'assistant',
             content: 'To ask questions about a specific case, please open an exception detail page first. Then I can help you with case-specific questions.',
           })
-        } else {
-          const answer = getGlobalAnswer(userMessage, normalizedRows)
-          addMessage({ role: 'assistant', content: answer })
+          setIsLoading(false)
+          return
         }
+
+        // Determine if dataset is small or large
+        const isSmallDataset = normalizedRows.length < 100
+        
+        let requestBody: any
+        
+        if (isSmallDataset) {
+          // Small dataset: send all rows
+          const compactRows = normalizedRows.map(row => extractCompactFields(row))
+          requestBody = {
+            rows: compactRows,
+            user_message: userMessage,
+          }
+        } else {
+          // Large dataset: send exceptions + schema summary
+          const today = new Date()
+          const exceptions = deriveExceptions(normalizedRows, today)
+          const compactExceptions = exceptions.map(ex => extractCompactFields(ex.rowData))
+          
+          // Build exception breakdown
+          const exceptionBreakdown: Record<string, number> = {}
+          exceptions.forEach(ex => {
+            if (ex.exception_type) {
+              exceptionBreakdown[ex.exception_type] = (exceptionBreakdown[ex.exception_type] || 0) + 1
+            }
+          })
+          
+          // Get column names from first row
+          const columnNames = rawRows.length > 0 ? Object.keys(rawRows[0]) : []
+          
+          requestBody = {
+            exceptions: compactExceptions,
+            schema_summary: {
+              total_rows: normalizedRows.length,
+              total_exceptions: exceptions.length,
+              exception_breakdown: exceptionBreakdown,
+              column_names: columnNames,
+            },
+            user_message: userMessage,
+          }
+        }
+
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        })
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.statusText}`)
+        }
+
+        const data = await response.json()
+        addMessage({ role: 'assistant', content: data.answer })
       }
     } catch (error) {
       console.error('Error sending message:', error)
