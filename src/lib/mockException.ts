@@ -31,9 +31,9 @@ export function csvRowToException(row: Record<string, string>): ExceptionData {
   }
 
   // Helper to get numeric value
-  const getNum = (key: string, alt?: number) => {
-    const value = get(key)
-    const num = parseFloat(value) || parseFloat(value.replace(/[^0-9.-]/g, '')) || alt || 0
+  const getNum = (key: string, alt?: string | number) => {
+    const value = get(key, typeof alt === 'string' ? alt : undefined)
+    const num = parseFloat(value) || parseFloat(value.replace(/[^0-9.-]/g, '')) || (typeof alt === 'number' ? alt : 0)
     return num
   }
 

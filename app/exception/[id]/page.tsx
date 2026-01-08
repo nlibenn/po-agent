@@ -142,12 +142,8 @@ export default function ExceptionPage({
       case 'ZOMBIE_PO':
         return 'Line open past expected closure'
       case 'UOM_AMBIGUITY':
-        // Check if there's a receipt date
-        if (normalizedRow.receipt_date && normalizedRow.receipt_date.trim() !== '') {
-          return 'Receipt posted, line not closed'
-        } else {
-          return 'Received quantity doesn\'t reconcile to order'
-        }
+        // UOM_AMBIGUITY is about measurement interpretation risk, not operational status
+        return 'Ambiguous item measurement'
       default:
         return 'Operational issue detected'
     }
@@ -254,9 +250,10 @@ export default function ExceptionPage({
         if (row.description) {
           observed.push(`Description: "${row.description.substring(0, 100)}${row.description.length > 100 ? '...' : ''}"`)
         }
+        // Only add receipt date if present, but don't assume line is open
+        // UOM_AMBIGUITY can occur on both open and closed lines
         if (row.receipt_date && row.receipt_date.trim() !== '') {
           observed.push(`Receipt date: ${row.receipt_date}`)
-          observed.push('Line is still open')
         }
         break
     }
