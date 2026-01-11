@@ -5,6 +5,14 @@
 
 export type ExceptionType = 'LATE_PO' | 'PARTIAL_OPEN' | 'ZOMBIE_PO' | 'UOM_AMBIGUITY' | null
 
+export type TriageStatus = 'OK' | 'Review' | 'Action'
+
+export interface TriageResult {
+  status: TriageStatus
+  signals: string[]
+  next_step: string | null
+}
+
 export interface NormalizedPORow {
   po_id: string
   line_id: string
@@ -170,6 +178,290 @@ export function detectUoMAmbiguity(description: string): boolean {
   }
   
   return false
+}
+
+/**
+ * Extracts description cues for pricing basis analysis (context only, not displayed as signals)
+ */
+function extractDescriptionCues(description: string): {
+  has_length_cue: boolean
+  has_bundle_cue: boolean
+  has_weight_cue: boolean
+} {
+  if (!description || description.trim() === '') {
+    return { has_length_cue: false, has_bundle_cue: false, has_weight_cue: false }
+  }
+  
+  const desc = description.toUpperCase()
+  
+  // Length cues: feet/inches markers
+  const has_length_cue = /'|"|FT|FEET|INCH|INCHES|IN\b/.test(desc) || 
+    /\d+\/\d+\s*'/.test(description) // Fractional feet like 17/24'
+  
+  // Bundle cues: packaging terms
+  const has_bundle_cue = /\b(CASE|CS|BOX|BUNDLE|PK|PACK|COIL|SKID|PALLET)\b/.test(desc)
+  
+  // Weight cues: weight units
+  const has_weight_cue = /\b(LB|LBS|#|TON|WT|WEIGHT)\b/.test(desc)
+  
+  return { has_length_cue, has_bundle_cue, has_weight_cue }
+}
+
+/**
+ * Checks if order_qty looks count-like (near-integer and reasonable count range)
+ */
+function isCountLikeQuantity(qty: number | null): boolean {
+  if (qty === null || qty <= 0) return false
+  // Near-integer: difference from rounded value is small
+  const diff = Math.abs(qty - Math.round(qty))
+  return diff < 0.01 && qty <= 5000
+}
+
+/**
+ * Builds a cohort key from description tokens for pricing comparison
+ */
+function buildCohortKey(description: string): string {
+  if (!description || description.trim() === '') return ''
+  
+  const desc = description.toUpperCase()
+  const tokens: string[] = []
+  
+  // Extract key identifiers
+  // Material types (DOM, HREW, PIPE, TUBE, etc.)
+  if (/\b(DOM|HREW|PIPE|TUBE|PLATE|SHEET|BAR|ROD|BEAM|CHANNEL|ANGLE)\b/.test(desc)) {
+    const match = desc.match(/\b(DOM|HREW|PIPE|TUBE|PLATE|SHEET|BAR|ROD|BEAM|CHANNEL|ANGLE)\b/)
+    if (match) tokens.push(match[1])
+  }
+  
+  // ASTM codes (A513, A500, A135, etc.)
+  const astmMatch = desc.match(/\bA\d{3,4}\b/)
+  if (astmMatch) tokens.push(astmMatch[0])
+  
+  // Material grades (STAINLESS, 4130, 4140, etc.)
+  if (/\bSTAINLESS\b/.test(desc)) tokens.push('STAINLESS')
+  const gradeMatch = desc.match(/\b(4130|4140|1018|1020|1045|316|304)\b/)
+  if (gradeMatch) tokens.push(gradeMatch[1])
+  
+  return tokens.length > 0 ? tokens.join('_') : ''
+}
+
+/**
+ * Computes robust statistics (median and MAD) for a price array
+ */
+function computePriceStats(prices: number[]): { median: number; mad: number } {
+  if (prices.length === 0) {
+    return { median: 0, mad: 0 }
+  }
+  
+  const sorted = [...prices].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  const median = sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid]
+  
+  // Compute MAD (Median Absolute Deviation)
+  const deviations = sorted.map(p => Math.abs(p - median))
+  deviations.sort((a, b) => a - b)
+  const madMid = Math.floor(deviations.length / 2)
+  const mad = deviations.length % 2 === 0
+    ? (deviations[madMid - 1] + deviations[madMid]) / 2
+    : deviations[madMid]
+  
+  // Avoid division by zero - use 1% of median as minimum MAD
+  const minMad = Math.max(median * 0.01, 0.01)
+  
+  return { median, mad: Math.max(mad, minMad) }
+}
+
+/**
+ * Checks if unit_price is an outlier relative to cohort or global pricing
+ */
+function isPriceOutlier(
+  unitPrice: number | null,
+  description: string,
+  allRows: NormalizedPORow[]
+): boolean {
+  if (!unitPrice || unitPrice <= 0) return false
+  if (allRows.length === 0) return false
+  
+  const cohortKey = buildCohortKey(description)
+  
+  // Build cohort: rows with same cohort key and valid prices (exclude current row)
+  let cohortPrices: number[] = []
+  
+  if (cohortKey) {
+    cohortPrices = allRows
+      .filter(row => {
+        if (!row.unit_price || row.unit_price <= 0) return false
+        // Skip if same row (by PO-line ID match if available, or by price match as fallback)
+        if (row.description && buildCohortKey(row.description) === cohortKey) return true
+        return false
+      })
+      .map(row => row.unit_price!)
+  }
+  
+  // If cohort too small (< 3 items), use global stats (excluding current price)
+  let stats: { median: number; mad: number }
+  if (cohortPrices.length >= 3) {
+    stats = computePriceStats(cohortPrices)
+  } else {
+    // Use global pricing stats (all valid prices)
+    const globalPrices = allRows
+      .filter(row => row.unit_price && row.unit_price > 0)
+      .map(row => row.unit_price!)
+    
+    if (globalPrices.length < 2) return false // Need at least 2 prices for comparison
+    
+    stats = computePriceStats(globalPrices)
+  }
+  
+  // Avoid edge case where median is 0 or MAD is 0
+  if (stats.median <= 0 || stats.mad <= 0) return false
+  
+  // Outlier rule: abs(price - median) > 3 * MAD
+  const deviation = Math.abs(unitPrice - stats.median)
+  return deviation > 3 * stats.mad
+}
+
+/**
+ * Checks if a line is overdue or old (more than 30 days past due date)
+ */
+function isOverdueOrOld(dueDate: Date | null, today: Date): boolean {
+  if (!dueDate) return false
+  
+  const todayNormalized = new Date(today)
+  todayNormalized.setHours(0, 0, 0, 0)
+  
+  const thirtyDaysAgo = new Date(todayNormalized)
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+  
+  return dueDate < thirtyDaysAgo
+}
+
+/**
+ * Computes triage classification for a single PO line
+ * Returns status, signals, and next_step recommendation
+ */
+export function computeTriage(
+  row: NormalizedPORow,
+  today: Date = new Date(),
+  allRowsForCohort: NormalizedPORow[] = []
+): TriageResult {
+  const signals: string[] = []
+  
+  // Signal 1: "Open after receipt"
+  // High confidence: line_open is true AND receipt_date exists and is not empty
+  const hasOpenAfterReceipt = row.line_open && row.receipt_date && row.receipt_date.trim() !== ''
+  if (hasOpenAfterReceipt) {
+    signals.push('Open after receipt')
+  }
+  
+  // Signal 2: "Partial receipt"
+  // Detected when: receipt_date exists but line is still open
+  // This is the same condition as "Open after receipt" but tracked separately for Review logic
+  if (hasOpenAfterReceipt) {
+    signals.push('Partial receipt')
+  }
+  
+  // Signal 3: "Missing critical fields"
+  // supplier_name or description missing
+  const hasSupplier = row.supplier_name && row.supplier_name.trim() !== ''
+  const hasDescription = row.description && row.description.trim() !== ''
+  if (!hasSupplier || !hasDescription) {
+    signals.push('Missing critical fields')
+  }
+  
+  // Signal 4: "Pricing basis check"
+  // Conservative trigger: ALL must be true:
+  // - Description has length/bundle/weight cues
+  // - order_qty looks count-like (near-integer, <= 5000)
+  // - unit_price is outlier in cohort
+  if (row.description && row.unit_price && row.order_qty) {
+    const cues = extractDescriptionCues(row.description)
+    const hasAnyCue = cues.has_length_cue || cues.has_bundle_cue || cues.has_weight_cue
+    
+    if (hasAnyCue && isCountLikeQuantity(row.order_qty)) {
+      // Only check price outlier if we have other rows for comparison
+      if (allRowsForCohort.length > 0) {
+        if (isPriceOutlier(row.unit_price, row.description, allRowsForCohort)) {
+          signals.push('Pricing basis check')
+        }
+      }
+    }
+  }
+  
+  // Determine status using conservative rules
+  let status: TriageStatus = 'OK'
+  let next_step: string | null = null
+  
+  // Action: only when "Open after receipt" is present with high confidence
+  if (signals.includes('Open after receipt')) {
+    status = 'Action'
+    next_step = 'Confirm receipt status and close line if complete'
+  }
+  // Review: when ("Partial receipt" AND overdue/old) OR ("Missing critical fields") OR ("Pricing basis check") OR (2+ signals present)
+  else if (
+    (signals.includes('Partial receipt') && isOverdueOrOld(row.due_date, today)) ||
+    signals.includes('Missing critical fields') ||
+    signals.includes('Pricing basis check') ||
+    signals.length >= 2
+  ) {
+    status = 'Review'
+    if (signals.includes('Missing critical fields')) {
+      next_step = 'Complete missing supplier or description information'
+    } else if (signals.includes('Pricing basis check')) {
+      next_step = 'Verify pricing basis matches quantity basis (per piece vs per length/bundle/weight)'
+    } else {
+      next_step = 'Review line status and confirm next steps'
+    }
+  }
+  // OK: otherwise
+  else {
+    status = 'OK'
+    next_step = null
+  }
+  
+  return {
+    status,
+    signals,
+    next_step
+  }
+}
+
+/**
+ * Computes triage for all rows and logs summary statistics
+ */
+export function computeTriageForAll(rows: NormalizedPORow[], today: Date = new Date()): Map<string, TriageResult> {
+  const results = new Map<string, TriageResult>()
+  const statusCounts = { OK: 0, Review: 0, Action: 0 }
+  let pricingBasisCheckCount = 0
+  
+  for (const row of rows) {
+    if (!row.po_id || !row.line_id) {
+      continue
+    }
+    
+    const id = `${row.po_id}-${row.line_id}`
+    // Pass all rows for cohort analysis
+    const triage = computeTriage(row, today, rows)
+    results.set(id, triage)
+    
+    statusCounts[triage.status]++
+    if (triage.signals.includes('Pricing basis check')) {
+      pricingBasisCheckCount++
+    }
+  }
+  
+  // Log summary with pricing basis check count
+  console.log('[Triage Summary]', {
+    OK: statusCounts.OK,
+    Review: statusCounts.Review,
+    Action: statusCounts.Action,
+    Total: rows.length,
+    'Pricing basis check': pricingBasisCheckCount
+  })
+  
+  return results
 }
 
 /**

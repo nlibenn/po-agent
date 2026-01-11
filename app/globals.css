@@ -15,10 +15,10 @@
 }
 
 .companion-widget-expanded .overflow-y-auto::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #d4d4d8;
   border-radius: 3px;
 }
 
 .companion-widget-expanded .overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #a3a3a8;
 }

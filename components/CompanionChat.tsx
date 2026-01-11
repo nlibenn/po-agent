@@ -292,9 +292,9 @@ export function CompanionChat() {
   ]
 
   const globalQuickPrompts = [
-    "How many exceptions?",
-    "Top suppliers flagged",
-    "Common issues",
+    "Summarize flagged POs",
+    "Suppliers with highest risk",
+    "Most common risk patterns",
   ]
 
   const quickPrompts = scope.type === 'case' ? caseQuickPrompts : globalQuickPrompts
@@ -310,25 +310,28 @@ export function CompanionChat() {
       {!isExpanded && (
         <button
           onClick={() => setIsExpanded(true)}
-          className="flex items-center gap-2 px-4 py-3 bg-gradient-to-br from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-200 group"
+          className="flex items-center gap-2 px-4 py-3 bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg shadow-lg hover:shadow-xl transition-all duration-200 group"
           aria-label="Open Companion Chat"
         >
           <Sparkles className="h-4 w-4" />
-          <span className="text-sm font-medium">Co-pilot</span>
+          <span className="text-sm font-medium">PO Risk Copilot</span>
         </button>
       )}
 
       {/* Expanded chat window */}
       {isExpanded && (
-        <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-[380px] h-[600px] flex flex-col overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-2xl border border-neutral-200 w-[380px] h-[600px] flex flex-col overflow-hidden">
           {/* Header */}
-          <div className="flex-shrink-0 px-4 py-3 border-b border-slate-200 bg-gradient-to-r from-violet-50 to-indigo-50">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className="p-1 bg-gradient-to-br from-violet-500 to-indigo-600 rounded-lg">
+          <div className="flex-shrink-0 px-4 py-3 border-b border-neutral-200 bg-white">
+            <div className="flex items-start justify-between mb-2">
+              <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                <div className="p-1 bg-neutral-900 rounded-lg flex-shrink-0 mt-0.5">
                   <Sparkles className="h-3.5 w-3.5 text-white" />
                 </div>
-                <h3 className="text-sm font-semibold text-slate-900">Co-pilot</h3>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold text-neutral-900 leading-tight">PO Risk Copilot</h3>
+                  <p className="text-xs text-neutral-500 leading-tight mt-1">Continuously reviewing purchase orders for inconsistencies and risk.</p>
+                </div>
               </div>
               <div className="flex items-center gap-1">
                 {messages.length > 0 && (
@@ -338,7 +341,7 @@ export function CompanionChat() {
                       size="sm"
                       onClick={handleCopyLast}
                       disabled={!messages.some(m => m.role === 'assistant')}
-                      className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
+                      className="h-7 w-7 p-0 text-neutral-500 hover:text-neutral-700"
                       title="Copy last response"
                     >
                       <Copy className="h-3.5 w-3.5" />
@@ -347,7 +350,7 @@ export function CompanionChat() {
                       variant="ghost" 
                       size="sm" 
                       onClick={clearMessages}
-                      className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
+                      className="h-7 w-7 p-0 text-neutral-500 hover:text-neutral-700"
                       title="Clear chat"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -358,7 +361,7 @@ export function CompanionChat() {
                   variant="ghost"
                   size="sm"
                   onClick={() => setIsExpanded(false)}
-                  className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700"
+                  className="h-7 w-7 p-0 text-neutral-500 hover:text-neutral-700"
                   title="Minimize"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -367,12 +370,12 @@ export function CompanionChat() {
             </div>
             
             {/* Context badges */}
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5 mt-2">
               <Badge variant={scope.type === 'case' ? 'default' : 'secondary'} className="text-xs px-1.5 py-0.5 h-5">
                 {scope.type === 'case' ? `Case` : 'Global'}
               </Badge>
               {contextInfo?.filename && (
-                <Badge variant="outline" className="text-xs px-1.5 py-0.5 h-5 text-slate-600">
+                <Badge variant="outline" className="text-xs px-1.5 py-0.5 h-5 text-neutral-600">
                   {contextInfo.filename.length > 15 ? `${contextInfo.filename.substring(0, 15)}...` : contextInfo.filename}
                 </Badge>
               )}
@@ -380,18 +383,13 @@ export function CompanionChat() {
           </div>
 
           {/* Messages area - scrollable */}
-          <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0 bg-slate-50">
+          <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0 bg-neutral-50">
             <div className="space-y-3">
               {messages.length === 0 && (
                 <div className="text-center py-8">
-                  <div className="w-10 h-10 mx-auto mb-3 rounded-full bg-gradient-to-br from-violet-100 to-indigo-100 flex items-center justify-center">
-                    <MessageCircle className="h-5 w-5 text-violet-600" />
+                  <div className="w-10 h-10 mx-auto mb-3 rounded-lg bg-neutral-100 flex items-center justify-center">
+                    <MessageCircle className="h-5 w-5 text-neutral-600" />
                   </div>
-                  <p className="text-xs text-slate-600 mb-2">
-                    {scope.type === 'case'
-                      ? 'Ask questions about this case'
-                      : 'Ask questions about your data'}
-                  </p>
                   
                   {/* Quick prompt chips */}
                   <div className="flex flex-wrap gap-1.5 justify-center">
@@ -399,7 +397,7 @@ export function CompanionChat() {
                       <button
                         key={idx}
                         onClick={() => handleQuickPrompt(prompt)}
-                        className="px-2.5 py-1 text-xs font-medium text-violet-700 bg-violet-50 hover:bg-violet-100 rounded-full border border-violet-200 transition-colors"
+                        className="px-2.5 py-1 text-xs font-medium text-neutral-700 bg-white hover:bg-neutral-50 rounded-lg border border-neutral-200 transition-colors"
                       >
                         {prompt}
                       </button>
@@ -414,10 +412,10 @@ export function CompanionChat() {
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   <div
-                    className={`max-w-[85%] rounded-xl px-3 py-2 ${
+                    className={`max-w-[85%] rounded-lg px-3 py-2 ${
                       msg.role === 'user'
-                        ? 'bg-gradient-to-br from-violet-600 to-indigo-600 text-white'
-                        : 'bg-white text-slate-800 border border-slate-200'
+                        ? 'bg-neutral-900 text-white'
+                        : 'bg-white text-neutral-800 border border-neutral-200'
                     }`}
                   >
                     <div className="text-xs whitespace-pre-wrap leading-relaxed">{msg.content}</div>
@@ -427,10 +425,10 @@ export function CompanionChat() {
 
               {isLoading && (
                 <div className="flex justify-start">
-                  <div className="bg-white border border-slate-200 rounded-xl px-3 py-2">
-                    <div className="flex items-center gap-2 text-xs text-slate-500">
-                      <Loader2 className="h-3 w-3 animate-spin text-violet-600" />
-                      <span>Thinking...</span>
+                  <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-2 text-xs text-neutral-500">
+                      <Loader2 className="h-3 w-3 animate-spin text-neutral-600" />
+                      <span>Analyzing...</span>
                     </div>
                   </div>
                 </div>
@@ -442,14 +440,14 @@ export function CompanionChat() {
 
           {/* Quick prompts (when messages exist) */}
           {messages.length > 0 && (
-            <div className="flex-shrink-0 px-4 py-2 border-t border-slate-100 bg-white">
+            <div className="flex-shrink-0 px-4 py-2 border-t border-neutral-100 bg-white">
               <div className="flex flex-wrap gap-1.5">
                 {quickPrompts.map((prompt, idx) => (
                   <button
                     key={idx}
                     onClick={() => handleQuickPrompt(prompt)}
                     disabled={isLoading}
-                    className="px-2 py-0.5 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-full border border-slate-200 transition-colors disabled:opacity-50"
+                    className="px-2 py-0.5 text-xs font-medium text-neutral-600 bg-neutral-50 hover:bg-neutral-100 rounded-lg border border-neutral-200 transition-colors disabled:opacity-50"
                   >
                     {prompt}
                   </button>
@@ -459,7 +457,7 @@ export function CompanionChat() {
           )}
 
           {/* Input area - sticky at bottom */}
-          <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 bg-white">
+          <div className="flex-shrink-0 px-4 py-3 border-t border-neutral-200 bg-white">
             <div className="flex gap-2">
               <textarea
                 value={input}
@@ -470,8 +468,8 @@ export function CompanionChat() {
                     handleSend()
                   }
                 }}
-                placeholder="Ask a question..."
-                className="flex-1 text-xs border border-slate-300 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-500 bg-slate-50 placeholder:text-slate-400"
+                placeholder="Ask about a flagged PO, supplier, or risk…"
+                className="flex-1 text-xs border border-neutral-300 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900 bg-neutral-50 placeholder:text-neutral-400"
                 rows={2}
                 disabled={isLoading}
               />
@@ -479,7 +477,7 @@ export function CompanionChat() {
                 onClick={handleSend}
                 disabled={!input.trim() || isLoading}
                 size="sm"
-                className="px-3 bg-gradient-to-br from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 rounded-lg"
+                className="px-3 bg-neutral-900 hover:bg-neutral-800 rounded-lg"
               >
                 {isLoading ? (
                   <Loader2 className="h-4 w-4 animate-spin" />

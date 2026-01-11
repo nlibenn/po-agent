@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { normalizeRow, deriveExceptions, Exception, generateDraftMessage } from '../../../src/lib/po'
+import { ArrowLeft } from 'lucide-react'
+import { normalizeRow, deriveExceptions, Exception, generateDraftMessage, computeTriage, TriageResult } from '../../../src/lib/po'
 
 export default function ExceptionPage({
   params,
@@ -13,6 +14,7 @@ export default function ExceptionPage({
   const [copiedState, setCopiedState] = useState<boolean>(false)
   const [exception, setException] = useState<Exception | null>(null)
   const [normalizedRow, setNormalizedRow] = useState<any>(null)
+  const [triage, setTriage] = useState<TriageResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [errorType, setErrorType] = useState<'no_data' | 'no_match' | null>(null)
@@ -49,7 +51,7 @@ export default function ExceptionPage({
       const matchingException = exceptions.find(ex => ex.id === id)
       
       if (!matchingException) {
-        setError(`No matching exception found for ${id}`)
+        setError(`No matching case found for ${id}`)
         setErrorType('no_match')
         setLoading(false)
         return
@@ -59,16 +61,20 @@ export default function ExceptionPage({
       const matchingRow = normalizedRows.find(row => 
         `${row.po_id}-${row.line_id}` === id
       )
-      
+
       if (!matchingRow) {
         setError(`No matching row found for ${id}`)
         setErrorType('no_match')
         setLoading(false)
         return
       }
+
+      // Compute triage for this row (pass all rows for cohort analysis)
+      const triageResult = computeTriage(matchingRow, today, normalizedRows)
       
       setException(matchingException)
       setNormalizedRow(matchingRow)
+      setTriage(triageResult)
       setLoading(false)
     } catch (e) {
       setError(`Error loading data: ${e instanceof Error ? e.message : 'Unknown error'}`)
@@ -105,23 +111,23 @@ export default function ExceptionPage({
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-neutral-50 flex items-center justify-center">
-        <div className="text-neutral-600">Loading exception data...</div>
+        <div className="h-full flex items-center justify-center">
+          <div className="text-neutral-600">Loading case data...</div>
       </div>
     )
   }
 
-  if (error || !exception || !normalizedRow) {
-    const backLink = errorType === 'no_data' ? '/' : '/queue'
-    const backText = errorType === 'no_data' ? '← Return to upload page' : '← Return to queue'
+  if (error || !exception || !normalizedRow || !triage) {
+    const backLink = errorType === 'no_data' ? '/' : '/exceptions'
+    const backText = errorType === 'no_data' ? '← Return to upload page' : '← Return to exceptions'
     
     return (
-      <div className="min-h-screen bg-neutral-50 flex items-center justify-center px-6">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-sm px-12 py-16 text-center">
-          <div className="text-red-600 mb-6">{error || 'Exception not found'}</div>
+      <div className="h-full flex items-center justify-center px-6">
+        <div className="max-w-md w-full bg-white/70 rounded-3xl shadow-sm px-12 py-16 text-center">
+          <div className="text-neutral-700 mb-6 font-medium">{error || 'Case not found'}</div>
           <Link 
             href={backLink} 
-            className="text-neutral-700 hover:text-neutral-900 underline text-sm"
+            className="text-neutral-600 hover:text-neutral-800 underline text-sm transition-colors"
           >
             {backText}
           </Link>
@@ -266,165 +272,215 @@ export default function ExceptionPage({
   const evidenceCategories = categorizeEvidence(exception, normalizedRow)
 
   return (
-    <div className="min-h-screen bg-neutral-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="space-y-6">
-            {/* Header */}
-            <div className="bg-white rounded-2xl shadow-sm">
-              <div className="px-8 py-6 border-b border-neutral-200">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${
-                      exception.exception_type === 'LATE_PO' ? 'bg-red-500' :
-                      exception.exception_type === 'PARTIAL_OPEN' ? 'bg-amber-500' :
-                      exception.exception_type === 'UOM_AMBIGUITY' ? 'bg-orange-500' :
-                      'bg-neutral-500'
-                    }`}></div>
-                    <h1 className="text-2xl font-semibold text-neutral-900">{diagnosisTitle}</h1>
-                  </div>
+    <div className="h-full">
+      <div className="max-w-7xl mx-auto px-8 py-10">
+        <div className="space-y-8">
+            {/* Header - elevated card surface */}
+            <div className="bg-white/70 rounded-3xl shadow-sm">
+              <div className="px-10 py-8">
+                <div className="flex items-center justify-between mb-6">
+                  <Link 
+                    href="/exceptions"
+                    className="inline-flex items-center gap-2 text-sm font-medium text-neutral-600 hover:text-neutral-800 transition-colors"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                    Back to exceptions
+                  </Link>
                   <div className="text-sm text-neutral-500">
                     PO {exception.po_id} • Line {exception.line_id}
                   </div>
                 </div>
+                <div className="flex items-center gap-3">
+                  <div className={`w-2 h-2 rounded-full ${
+                      triage.status === 'Action' ? 'bg-neutral-700' :
+                      triage.status === 'Review' ? 'bg-neutral-600' :
+                      'bg-neutral-500'
+                  }`}></div>
+                    <h1 className="text-2xl font-semibold text-neutral-800">
+                      {triage.status === 'Action' ? 'Attention suggested' : triage.status === 'Review' ? 'Attention suggested' : 'Case: ' + triage.status}
+                    </h1>
+                  </div>
               </div>
             </div>
             
-            {/* What's unusual */}
-            <div className="bg-white rounded-2xl shadow-sm">
-              <div className="px-8 py-6 border-b border-neutral-200">
-                <h2 className="text-base font-semibold text-neutral-900 mb-4">What's unusual</h2>
-              </div>
-              <div className="px-8 py-6 space-y-4">
-                <div>
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Expected</div>
-                  <div className="text-sm text-neutral-700 leading-relaxed">{whatsUnusual.expected}</div>
-                </div>
-                <div>
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Observed</div>
-                  <div className="text-sm text-neutral-900 leading-relaxed">{whatsUnusual.observed}</div>
+            {/* Status and Signals - elevated card */}
+            <div className="bg-white/70 rounded-3xl shadow-sm">
+              <div className="px-10 py-8">
+                <h2 className="text-base font-semibold text-neutral-800 mb-6">Status & Signals</h2>
+                <div className="space-y-6">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Status</div>
+                    <div>
+                      <span className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-medium ${
+                        triage.status === 'Action' ? 'bg-neutral-200 text-neutral-800' :
+                        triage.status === 'Review' ? 'bg-neutral-100 text-neutral-700' :
+                        'bg-neutral-100 text-neutral-600'
+                      }`}>
+                        {triage.status}
+                      </span>
+                    </div>
+                  </div>
+                  {triage.signals.length > 0 && (
+                    <div>
+                      <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Signals</div>
+                      <div className="flex flex-wrap gap-2">
+                        {triage.signals.map((signal, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-neutral-50/80 text-neutral-700 shadow-sm"
+                          >
+                            {signal}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {triage.next_step && (
+                    <div>
+                      <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Next Step</div>
+                      <div className="text-sm text-neutral-800 font-medium">
+                        {triage.next_step}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-
-            {/* Case Summary */}
-            <div className="bg-white rounded-2xl shadow-sm">
-              <div className="px-8 py-6 border-b border-neutral-200">
-                <h2 className="text-base font-semibold text-neutral-900">Case Summary</h2>
-              </div>
-              <div className="px-8 py-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            
+            {/* What's unusual - elevated card */}
+            <div className="bg-white/70 rounded-3xl shadow-sm">
+              <div className="px-10 py-8">
+                <h2 className="text-base font-semibold text-neutral-800 mb-6">What's unusual</h2>
+                <div className="space-y-6">
                   <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">PO</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.po_id || '—'}</div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Expected</div>
+                    <div className="text-sm text-neutral-700 leading-relaxed">{whatsUnusual.expected}</div>
                   </div>
                   <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Line</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.line_id || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Supplier</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.supplier_name || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Part Num</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.part_num || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Description</div>
-                    <div className="text-sm text-neutral-900">{normalizedRow.description || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Qty</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.order_qty !== null ? normalizedRow.order_qty.toLocaleString() : '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Unit Price</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.unit_price !== null ? `$${normalizedRow.unit_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Due Date</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.due_date ? normalizedRow.due_date.toLocaleDateString() : '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Receipt Date</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.receipt_date || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-1">Line Open</div>
-                    <div className="text-sm font-semibold text-neutral-900">{normalizedRow.line_open ? 'Yes' : 'No'}</div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Observed</div>
+                    <div className="text-sm text-neutral-800 leading-relaxed">{whatsUnusual.observed}</div>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Evidence */}
-            <div className="bg-white rounded-2xl shadow-sm">
-              <div className="px-8 py-6 border-b border-neutral-200">
-                <h2 className="text-base font-semibold text-neutral-900">Evidence</h2>
-              </div>
-              <div className="px-8 py-6 space-y-6">
+            {/* Case Summary - elevated card */}
+            <div className="bg-white/70 rounded-3xl shadow-sm">
+              <div className="px-10 py-8">
+                <h2 className="text-base font-semibold text-neutral-800 mb-6">Case Summary</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">PO</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.po_id || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Line</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.line_id || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Supplier</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.supplier_name || '—'}</div>
+                  </div>
+                    <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Part Num</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.part_num || '—'}</div>
+                    </div>
+                    <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Description</div>
+                    <div className="text-sm text-neutral-800">{normalizedRow.description || '—'}</div>
+                    </div>
+                    <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Qty</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.order_qty !== null ? normalizedRow.order_qty.toLocaleString() : '—'}</div>
+                  </div>
                 <div>
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Expected</div>
-                  <ul className="space-y-2">
-                    {evidenceCategories.expected.map((item, index) => (
-                      <li key={index} className="flex items-start gap-2.5 text-sm text-neutral-700">
-                        <span className="text-neutral-400 mt-1.5 flex-shrink-0">•</span>
-                        <span>{item}</span>
-                      </li>
-                    ))}
-                  </ul>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Unit Price</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.unit_price !== null ? `$${normalizedRow.unit_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}</div>
                 </div>
                 <div>
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Observed</div>
-                  <ul className="space-y-2">
-                    {evidenceCategories.observed.map((item, index) => (
-                      <li key={index} className="flex items-start gap-2.5 text-sm text-neutral-900">
-                        <span className="text-neutral-500 mt-1.5 flex-shrink-0">•</span>
-                        <span>{item}</span>
-                      </li>
-                    ))}
-                  </ul>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Due Date</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.due_date ? normalizedRow.due_date.toLocaleDateString() : '—'}</div>
+                </div>
+                <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Receipt Date</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.receipt_date || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Line Open</div>
+                    <div className="text-sm font-semibold text-neutral-800">{normalizedRow.line_open ? 'Yes' : 'No'}</div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Recommended Action */}
-            <div className="bg-white rounded-2xl shadow-sm">
-              <div className="px-8 py-6 border-b border-neutral-200">
-                <h2 className="text-base font-semibold text-neutral-900">Recommended Action</h2>
-              </div>
-              <div className="px-8 py-6">
-                <div className="text-sm font-semibold text-neutral-900">
-                  {getRecommendedAction(exception.exception_type)}
+            {/* Evidence - elevated card */}
+            <div className="bg-white/70 rounded-3xl shadow-sm">
+              <div className="px-10 py-8">
+                <h2 className="text-base font-semibold text-neutral-800 mb-6">Evidence</h2>
+                <div className="space-y-8">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-4">Expected</div>
+                    <ul className="space-y-3">
+                      {evidenceCategories.expected.map((item, index) => (
+                        <li key={index} className="flex items-start gap-3 text-sm text-neutral-700 leading-relaxed">
+                          <span className="text-neutral-400 mt-1.5 flex-shrink-0">•</span>
+                          <span>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-4">Observed</div>
+                    <ul className="space-y-3">
+                      {evidenceCategories.observed.map((item, index) => (
+                        <li key={index} className="flex items-start gap-3 text-sm text-neutral-800 leading-relaxed">
+                          <span className="text-neutral-500 mt-1.5 flex-shrink-0">•</span>
+                          <span>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Prepared Message */}
-            <div className="bg-white rounded-2xl shadow-sm">
-              <div className="px-8 py-6 border-b border-neutral-200">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-base font-semibold text-neutral-900">Prepared Message</h2>
+            {/* Recommended Action - only show if next_step is different from triage next_step */}
+            {triage.next_step && triage.next_step !== getRecommendedAction(exception.exception_type) && (
+              <div className="bg-white/70 rounded-3xl shadow-sm">
+                <div className="px-10 py-8">
+                  <h2 className="text-base font-semibold text-neutral-800 mb-4">Recommended Action</h2>
+                  <div className="text-sm font-semibold text-neutral-800">
+                    {getRecommendedAction(exception.exception_type)}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Prepared Message - elevated card */}
+            <div className="bg-white/70 rounded-3xl shadow-sm">
+              <div className="px-10 py-8">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-base font-semibold text-neutral-800">Prepared Message</h2>
                   <button
                     onClick={handleCopy}
-                    className="text-xs font-medium text-neutral-700 hover:text-neutral-900 px-3 py-1.5 border border-neutral-300 rounded-lg hover:bg-neutral-50 transition-colors"
+                    className="text-xs font-medium text-neutral-700 hover:text-neutral-800 px-3 py-1.5 bg-white/70 hover:bg-white/85 rounded-xl transition-colors shadow-sm"
                   >
                     {copiedState ? '✓ Copied' : 'Copy'}
                   </button>
                 </div>
-              </div>
-              <div className="px-8 py-6 space-y-4">
-                <div>
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Subject</div>
-                  <div className="bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2.5">
-                    <div className="text-sm text-neutral-900 font-medium">{draft.subject}</div>
+                <div className="space-y-5">
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Subject</div>
+                    <div className="bg-neutral-50/50 rounded-2xl shadow-sm px-4 py-3">
+                      <div className="text-sm text-neutral-800 font-medium">{draft.subject}</div>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Body</div>
-                  <div className="bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2.5">
-                    <div className="text-sm text-neutral-700 whitespace-pre-wrap leading-relaxed">
-                      {draft.body}
+                  <div>
+                    <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-3">Body</div>
+                    <div className="bg-neutral-50/50 rounded-2xl shadow-sm px-4 py-3">
+                      <div className="text-sm text-neutral-700 whitespace-pre-wrap leading-relaxed">
+                        {draft.body}
+                      </div>
                     </div>
                   </div>
                 </div>
