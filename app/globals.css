@@ -5,6 +5,15 @@
 /* stylelint-disable-next-line at-rule-no-unknown */
 @tailwind utilities;
 
+/* Modern consumer-grade interface - calm, minimal, human */
+@layer base {
+  body {
+    @apply antialiased;
+    /* Base background for layered surfaces */
+    @apply bg-neutral-100/30;
+  }
+}
+
 /* Custom scrollbar for chat messages */
 .companion-widget-expanded .overflow-y-auto::-webkit-scrollbar {
   width: 6px;
@@ -21,4 +30,9 @@
 
 .companion-widget-expanded .overflow-y-auto::-webkit-scrollbar-thumb:hover {
   background: #a3a3a8;
+}
+
+/* Soft shadows for elevation instead of borders */
+.shadow-soft {
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.03), 0 1px 3px 0 rgb(0 0 0 / 0.08);
 }
