@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getTokens } from '@/src/lib/gmail/tokenStore'
-import { getAuthenticatedOAuth2Client } from '@/src/lib/gmail/client'
-import { google } from 'googleapis'
+import { getGmailClient } from '@/src/lib/gmail/client'
 
 export const runtime = 'nodejs'
 
@@ -19,16 +18,17 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // Try to get user info to verify token is valid
+    // Try to get Gmail profile to verify token is valid and get email address
     let email: string | undefined
     let scopes: string[] | undefined
 
     try {
-      const auth = await getAuthenticatedOAuth2Client()
-      const oauth2 = google.oauth2({ version: 'v2', auth })
-      const userInfo = await oauth2.userinfo.get()
+      const gmail = await getGmailClient()
+      const profile = await gmail.users.getProfile({
+        userId: 'me',
+      })
 
-      email = userInfo.data.email || undefined
+      email = profile.data.emailAddress || undefined
       scopes = tokens.scope ? tokens.scope.split(' ') : undefined
     } catch (error) {
       console.error('Error verifying Gmail OAuth token:', error)

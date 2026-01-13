@@ -12,6 +12,7 @@
     "@radix-ui/react-dialog": "^1.0.5",
     "@radix-ui/react-scroll-area": "^1.0.5",
     "@radix-ui/react-separator": "^1.0.5",
+    "@types/xlsx": "^0.0.35",
     "better-sqlite3": "^11.0.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
@@ -23,7 +24,9 @@
     "papaparse": "^5.5.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "tailwind-merge": "^2.2.0"
+    "server-only": "^0.0.1",
+    "tailwind-merge": "^2.2.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",

@@ -75,6 +75,7 @@ export interface SupplierChaseAttachment {
   filename: string | null
   mime_type: string | null
   gmail_attachment_id: string | null
+  binary_data_base64: string | null // Base64-encoded binary data (temporary storage for PDFs)
   text_extract: string | null
   parsed_fields_json: Record<string, any> | null
   parse_confidence_json: Record<string, any> | null

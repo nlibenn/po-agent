@@ -15,7 +15,11 @@ import type {
 } from './types'
 
 /**
- * Initialize the database (creates tables if needed)
+ * Initialize the database (creates all tables if needed)
+ * 
+ * This is a convenience wrapper that ensures initialization.
+ * All tables (supplier-agent + gmail_tokens) are created by
+ * the shared initialization in storage/sqlite.ts.
  */
 export function initDb(): void {
   getDb()
@@ -189,10 +193,36 @@ export function updateCase(case_id: string, patch: SupplierChaseCaseUpdate): voi
 }
 
 /**
- * Add an event to a case
+ * Add an event to a case (idempotent)
+ * 
+ * Prevents duplicate events by checking if an identical event was logged recently
+ * (within 5 seconds with same case_id, event_type, and summary).
  */
 export function addEvent(case_id: string, event: SupplierChaseEventInput): void {
   const db = getDb()
+  
+  // Check for duplicate event (same case_id, event_type, summary within 5 seconds)
+  const duplicateWindow = 5000 // 5 seconds
+  const duplicateCheck = db.prepare(`
+    SELECT event_id FROM events 
+    WHERE case_id = ? 
+      AND event_type = ? 
+      AND summary = ?
+      AND ABS(timestamp - ?) < ?
+    LIMIT 1
+  `).get(
+    case_id,
+    event.event_type,
+    event.summary,
+    event.timestamp,
+    duplicateWindow
+  ) as { event_id: string } | undefined
+  
+  if (duplicateCheck) {
+    // Event already logged recently, skip
+    return
+  }
+  
   const event_id = `${Date.now()}-${Math.random().toString(36).substring(7)}`
   
   const stmt = db.prepare(`
@@ -233,18 +263,37 @@ export function listEvents(case_id: string): SupplierChaseEvent[] {
 }
 
 /**
- * Add a message to a case
+ * Add a message to a case (idempotent)
+ * 
+ * If message.message_id is provided, it will be used (e.g., Gmail message ID).
+ * Otherwise, a UUID will be generated.
+ * 
+ * Uses UPSERT to handle duplicate message_ids gracefully.
  */
-export function addMessage(case_id: string, message: SupplierChaseMessageInput): SupplierChaseMessage {
+export function addMessage(case_id: string, message: SupplierChaseMessageInput & { message_id?: string }): SupplierChaseMessage {
   const db = getDb()
-  const message_id = `${Date.now()}-${Math.random().toString(36).substring(7)}`
+  const message_id = message.message_id || `${Date.now()}-${Math.random().toString(36).substring(7)}`
   const created_at = Date.now()
+  
+  // Check if message already exists to preserve original created_at
+  const existing = db.prepare('SELECT created_at FROM messages WHERE message_id = ?').get(message_id) as { created_at: number } | undefined
+  const final_created_at = existing?.created_at || created_at
   
   const stmt = db.prepare(`
     INSERT INTO messages (
       message_id, case_id, direction, thread_id, from_email, to_email,
       cc, subject, body_text, received_at, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(message_id) DO UPDATE SET
+      case_id = excluded.case_id,
+      direction = excluded.direction,
+      thread_id = excluded.thread_id,
+      from_email = excluded.from_email,
+      to_email = excluded.to_email,
+      cc = excluded.cc,
+      subject = excluded.subject,
+      body_text = excluded.body_text,
+      received_at = excluded.received_at
   `)
   
   stmt.run(
@@ -258,7 +307,7 @@ export function addMessage(case_id: string, message: SupplierChaseMessageInput):
     message.subject,
     message.body_text,
     message.received_at,
-    created_at
+    final_created_at
   )
   
   return {
@@ -272,7 +321,7 @@ export function addMessage(case_id: string, message: SupplierChaseMessageInput):
     subject: message.subject,
     body_text: message.body_text,
     received_at: message.received_at,
-    created_at,
+    created_at: final_created_at,
   }
 }
 
@@ -300,18 +349,34 @@ export function listMessages(case_id: string): SupplierChaseMessage[] {
 }
 
 /**
- * Add an attachment to a message
+ * Add an attachment to a message (idempotent)
+ * 
+ * Uses UPSERT to handle duplicate attachment_ids gracefully.
+ * If attachment.attachment_id is provided (e.g., Gmail attachment ID), it will be used.
  */
-export function addAttachment(message_id: string, attachment: SupplierChaseAttachmentInput): SupplierChaseAttachment {
+export function addAttachment(message_id: string, attachment: SupplierChaseAttachmentInput & { attachment_id?: string }): SupplierChaseAttachment {
   const db = getDb()
-  const attachment_id = `${Date.now()}-${Math.random().toString(36).substring(7)}`
+  const attachment_id = attachment.attachment_id || `${Date.now()}-${Math.random().toString(36).substring(7)}`
   const created_at = Date.now()
+  
+  // Check if attachment already exists to preserve original created_at
+  const existing = db.prepare('SELECT created_at FROM attachments WHERE attachment_id = ?').get(attachment_id) as { created_at: number } | undefined
+  const final_created_at = existing?.created_at || created_at
   
   const stmt = db.prepare(`
     INSERT INTO attachments (
       attachment_id, message_id, filename, mime_type, gmail_attachment_id,
-      text_extract, parsed_fields_json, parse_confidence_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      binary_data_base64, text_extract, parsed_fields_json, parse_confidence_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(attachment_id) DO UPDATE SET
+      message_id = excluded.message_id,
+      filename = excluded.filename,
+      mime_type = excluded.mime_type,
+      gmail_attachment_id = excluded.gmail_attachment_id,
+      binary_data_base64 = excluded.binary_data_base64,
+      text_extract = excluded.text_extract,
+      parsed_fields_json = excluded.parsed_fields_json,
+      parse_confidence_json = excluded.parse_confidence_json
   `)
   
   stmt.run(
@@ -320,10 +385,11 @@ export function addAttachment(message_id: string, attachment: SupplierChaseAttac
     attachment.filename,
     attachment.mime_type,
     attachment.gmail_attachment_id,
+    attachment.binary_data_base64 || null,
     attachment.text_extract,
     attachment.parsed_fields_json ? JSON.stringify(attachment.parsed_fields_json) : null,
     attachment.parse_confidence_json ? JSON.stringify(attachment.parse_confidence_json) : null,
-    created_at
+    final_created_at
   )
   
   return {
@@ -332,10 +398,11 @@ export function addAttachment(message_id: string, attachment: SupplierChaseAttac
     filename: attachment.filename,
     mime_type: attachment.mime_type,
     gmail_attachment_id: attachment.gmail_attachment_id,
+    binary_data_base64: attachment.binary_data_base64 || null,
     text_extract: attachment.text_extract,
     parsed_fields_json: attachment.parsed_fields_json,
     parse_confidence_json: attachment.parse_confidence_json,
-    created_at,
+    created_at: final_created_at,
   }
 }
 
@@ -358,6 +425,7 @@ export function listAttachmentsForCase(case_id: string): SupplierChaseAttachment
     filename: row.filename,
     mime_type: row.mime_type,
     gmail_attachment_id: row.gmail_attachment_id,
+    binary_data_base64: row.binary_data_base64 || null,
     text_extract: row.text_extract,
     parsed_fields_json: row.parsed_fields_json ? JSON.parse(row.parsed_fields_json) : null,
     parse_confidence_json: row.parse_confidence_json ? JSON.parse(row.parse_confidence_json) : null,

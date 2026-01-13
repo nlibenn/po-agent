@@ -7,8 +7,8 @@ export default function HomePage() {
   const router = useRouter()
 
   useEffect(() => {
-    // Redirect to releases as default section
-    router.replace('/releases')
+    // Redirect to home as default section
+    router.replace('/home')
   }, [router])
 
   return (

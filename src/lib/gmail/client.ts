@@ -1,6 +1,11 @@
 /**
  * Gmail API Client Helpers
+ * 
+ * SERVER-ONLY: This module uses google-auth-library which requires Node.js APIs.
+ * Do not import this in client components.
  */
+
+import 'server-only'
 
 import { google } from 'googleapis'
 import { OAuth2Client } from 'google-auth-library'
@@ -82,7 +87,7 @@ export async function getAuthenticatedOAuth2Client(): Promise<OAuth2Client> {
  */
 export async function getGmailClient() {
   const auth = await getAuthenticatedOAuth2Client()
-  return google.gmail({ version: 'v1', auth })
+  return google.gmail({ version: 'v1', auth: auth as any })
 }
 
 /**

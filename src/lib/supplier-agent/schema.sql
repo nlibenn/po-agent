@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS attachments (
   filename TEXT,
   mime_type TEXT,
   gmail_attachment_id TEXT,
+  binary_data_base64 TEXT, -- Base64-encoded binary data (temporary storage for PDFs)
   text_extract TEXT,
   parsed_fields_json TEXT, -- JSON object
   parse_confidence_json TEXT, -- JSON object

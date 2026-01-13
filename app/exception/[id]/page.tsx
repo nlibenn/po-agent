@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
-import { normalizeRow, deriveExceptions, Exception, generateDraftMessage, computeTriage, TriageResult } from '../../../src/lib/po'
+import { deriveExceptions, Exception, generateDraftMessage, computeTriage, TriageResult } from '../../../src/lib/po'
+import { useWorkspace } from '@/components/WorkspaceProvider'
 
 export default function ExceptionPage({
   params,
@@ -19,29 +20,17 @@ export default function ExceptionPage({
   const [error, setError] = useState<string | null>(null)
   const [errorType, setErrorType] = useState<'no_data' | 'no_match' | null>(null)
 
+  const { normalizedRows } = useWorkspace()
+
   useEffect(() => {
-    // Load po_rows from sessionStorage
-    const storedData = sessionStorage.getItem('po_rows')
-    
-    if (!storedData) {
-      setError('No CSV data found. Please upload a CSV file first.')
+    if (!normalizedRows || normalizedRows.length === 0) {
+      setError('No workspace data found. Please upload a CSV or Excel file first.')
       setErrorType('no_data')
       setLoading(false)
       return
     }
 
     try {
-      const rawRows = JSON.parse(storedData) as Record<string, any>[]
-      
-      if (!Array.isArray(rawRows) || rawRows.length === 0) {
-        setError('No data rows found. Please upload a CSV file first.')
-        setErrorType('no_data')
-        setLoading(false)
-        return
-      }
-      
-      // Normalize all rows
-      const normalizedRows = rawRows.map(row => normalizeRow(row))
       
       // Derive exceptions
       const today = new Date()

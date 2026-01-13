@@ -53,14 +53,15 @@ export function ExceptionSidePanel({ exception, onClose, onAction }: ExceptionSi
 
   return (
     <>
-      {/* Backdrop - subtle */}
+      {/* Backdrop - Light scrim for visual reference, prevents interaction */}
       <div 
-        className="fixed inset-0 bg-black/10 z-30 backdrop-blur-sm"
+        className="fixed inset-0 bg-black/5 z-30 pointer-events-auto"
         onClick={onClose}
+        style={{ pointerEvents: 'auto' }}
       />
       
       {/* Side Panel - elevated floating surface */}
-      <div className="fixed inset-y-0 right-0 w-[600px] bg-white/85 backdrop-blur-md shadow-2xl z-40 flex flex-col">
+      <div className="fixed inset-y-0 right-0 w-[600px] bg-white/95 shadow-2xl z-40 flex flex-col border-l border-neutral-200/30">
         {/* Header - no border, soft separation */}
         <div className="flex-shrink-0 px-8 py-6">
           <div className="flex items-center justify-between mb-5">
@@ -192,7 +193,7 @@ export function ExceptionSidePanel({ exception, onClose, onAction }: ExceptionSi
         </div>
 
         {/* Footer Actions - soft elevation, no border */}
-        <div className="flex-shrink-0 px-8 py-6 bg-neutral-50/50 backdrop-blur-sm space-y-3">
+        <div className="flex-shrink-0 px-8 py-6 bg-neutral-50/50 space-y-3">
           <div className="text-xs font-medium text-neutral-800 mb-3">Buyer Actions</div>
           <div className="flex gap-3">
             <button
