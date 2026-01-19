@@ -54,33 +54,35 @@ export function generateConfirmationEmail(params: ConfirmationEmailParams): Conf
     bodyText += `\n`
   }
   
-  // Missing fields
-  bodyText += `Please confirm the following:\n\n`
-  
-  const bullets: string[] = []
-  
-  // Handle each missing field
-  for (const field of missingFields) {
-    if (field === 'delivery_date' || field === 'ship_date') {
-      bullets.push(`• Expected ${field === 'delivery_date' ? 'delivery' : 'ship'} date`)
-    } else if (field === 'supplier_reference') {
-      bullets.push(`• Supplier order / acknowledgement / confirmation #`)
-    } else if (field === 'pricing_basis' || field === 'qty_basis') {
-      // Multiple choice for pricing/qty basis
-      const basisType = field === 'pricing_basis' ? 'pricing' : 'quantity'
-      bullets.push(`• ${basisType.charAt(0).toUpperCase() + basisType.slice(1)} basis: (A) per each (B) per foot (C) per pound (D) per bundle/case (E) other: ____`)
-    } else if (field === 'acknowledgement') {
-      bullets.push(`• Order acknowledgement / confirmation`)
-    } else if (field === 'quantity') {
-      bullets.push(`• Confirmed quantity`)
-    } else {
-      // Generic field name
-      bullets.push(`• ${field.replace(/_/g, ' ')}`)
+  // Missing fields - build dynamic list based on what's actually missing
+  if (missingFields.length > 0) {
+    bodyText += `Please confirm the following:\n\n`
+    
+    const bullets: string[] = []
+    
+    // Handle each missing field dynamically
+    for (const field of missingFields) {
+      if (field === 'delivery_date' || field === 'confirmed_delivery_date' || field === 'ship_date' || field === 'confirmed_ship_date') {
+        bullets.push(`• Confirmed ship date`)
+      } else if (field === 'supplier_reference' || field === 'supplier_order_number') {
+        bullets.push(`• Supplier order number`)
+      } else if (field === 'quantity' || field === 'confirmed_quantity') {
+        bullets.push(`• Confirmed quantity`)
+      } else if (field === 'pricing_basis' || field === 'qty_basis') {
+        // Multiple choice for pricing/qty basis
+        const basisType = field === 'pricing_basis' ? 'pricing' : 'quantity'
+        bullets.push(`• ${basisType.charAt(0).toUpperCase() + basisType.slice(1)} basis: (A) per each (B) per foot (C) per pound (D) per bundle/case (E) other: ____`)
+      } else if (field === 'acknowledgement') {
+        bullets.push(`• Order acknowledgement / confirmation`)
+      } else {
+        // Generic field name
+        bullets.push(`• ${field.replace(/_/g, ' ')}`)
+      }
     }
+    
+    bodyText += bullets.join('\n')
+    bodyText += `\n\n`
   }
-  
-  bodyText += bullets.join('\n')
-  bodyText += `\n\n`
   
   // Closing
   bodyText += `Please reply with the above information at your earliest convenience.\n\n`

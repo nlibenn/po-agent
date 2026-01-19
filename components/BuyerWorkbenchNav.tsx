@@ -3,20 +3,43 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useWorkspace } from '@/components/WorkspaceProvider'
+import { useEffect, useState } from 'react'
+import { Home, FolderOpen, Package, AlertCircle, FileCheck } from 'lucide-react'
 
 const navItems = [
-  { href: '/home', label: 'Home', priority: 'highest', dataDependent: false },
-  { href: '/releases', label: 'Releases', priority: 'highest', dataDependent: true },
-  { href: '/exceptions', label: 'Exceptions', priority: 'primary', dataDependent: true },
-  { href: '/unconfirmed-pos', label: 'Unconfirmed POs', priority: 'muted', dataDependent: true },
-  { href: '/invoices', label: 'Invoices', priority: 'informational', dataDependent: true },
-  { href: '/standard-work', label: 'Standard Work', priority: 'lowest', dataDependent: false },
+  { href: '/home', label: 'Home', priority: 'highest', dataDependent: false, icon: Home },
+  { href: '/drive', label: 'Drive', priority: 'highest', dataDependent: false, icon: FolderOpen },
+  { href: '/releases', label: 'Releases', priority: 'highest', dataDependent: true, icon: Package },
+  { href: '/exceptions', label: 'Exceptions', priority: 'primary', dataDependent: true, icon: AlertCircle },
+  { href: '/unconfirmed-pos', label: 'Unconfirmed POs', priority: 'muted', dataDependent: true, icon: FileCheck },
 ]
 
 export function BuyerWorkbenchNav() {
   const pathname = usePathname()
   const { rows } = useWorkspace()
   const hasWorkspaceData = rows.length > 0
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false)
+  
+  // Check if inspector is open via body data attribute (only on unconfirmed-pos page)
+  useEffect(() => {
+    const checkInspector = () => {
+      const isOpen = document.body.getAttribute('data-inspector-open') === 'true'
+      setIsInspectorOpen(isOpen)
+    }
+    
+    // Check initially
+    checkInspector()
+    
+    // Watch for changes via MutationObserver
+    const observer = new MutationObserver(checkInspector)
+    observer.observe(document.body, { attributes: true, attributeFilter: ['data-inspector-open'] })
+    
+    return () => observer.disconnect()
+  }, [])
+  
+  // Only collapse on unconfirmed-pos page
+  const isUnconfirmedPosPage = pathname === '/unconfirmed-pos'
+  const shouldCollapse = isUnconfirmedPosPage && isInspectorOpen
 
   const getPriorityClasses = (priority: string, isActive: boolean, dataDependent: boolean, hasData: boolean) => {
     // Active state always wins - pill background takes precedence over workspace state
@@ -25,17 +48,17 @@ export function BuyerWorkbenchNav() {
       // All nav items use consistent font-weight (default/normal)
       switch (priority) {
         case 'highest':
-          return 'bg-neutral-800 text-white shadow-sm'
+          return 'bg-primary-deep text-surface shadow-sm'
         case 'primary':
-          return 'bg-neutral-700 text-white shadow-sm'
+          return 'bg-primary-strong text-surface shadow-sm'
         case 'muted':
-          return 'bg-neutral-100 text-neutral-700'
+          return 'bg-surface-2 text-text'
         case 'informational':
-          return 'bg-neutral-50 text-neutral-600'
+          return 'bg-surface-tint text-text-muted'
         case 'lowest':
-          return 'bg-neutral-50/50 text-neutral-500'
+          return 'bg-surface-tint/50 text-text-subtle'
         default:
-          return 'bg-neutral-800 text-white shadow-sm'
+          return 'bg-primary-deep text-surface shadow-sm'
       }
     } else {
       // When no workspace data and item is data-dependent, use more muted colors from existing scale
@@ -43,39 +66,46 @@ export function BuyerWorkbenchNav() {
       if (dataDependent && !hasData) {
         switch (priority) {
           case 'highest':
-            return 'text-neutral-400 hover:bg-white/40'
+            return 'text-text-subtle hover:bg-surface/40'
           case 'primary':
-            return 'text-neutral-400 hover:bg-white/40'
+            return 'text-text-subtle hover:bg-surface/40'
           case 'muted':
-            return 'text-neutral-400 hover:bg-white/40'
+            return 'text-text-subtle hover:bg-surface/40'
           case 'informational':
-            return 'text-neutral-400 hover:bg-white/40'
+            return 'text-text-subtle hover:bg-surface/40'
           default:
-            return 'text-neutral-400 hover:bg-white/40'
+            return 'text-text-subtle hover:bg-surface/40'
         }
       } else {
         switch (priority) {
           case 'highest':
-            return 'text-neutral-800 hover:bg-white/40'
+            return 'text-text hover:bg-surface/40'
           case 'primary':
-            return 'text-neutral-700 hover:bg-white/40'
+            return 'text-text hover:bg-surface/40'
           case 'muted':
-            return 'text-neutral-500 hover:bg-white/40'
+            return 'text-text-muted hover:bg-surface/40'
           case 'informational':
-            return 'text-neutral-400 hover:bg-white/40'
+            return 'text-text-subtle hover:bg-surface/40'
           case 'lowest':
-            return 'text-neutral-400 hover:bg-white/40'
+            return 'text-text-subtle hover:bg-surface/40'
           default:
-            return 'text-neutral-700 hover:bg-white/40'
+            return 'text-text hover:bg-surface/40'
         }
       }
     }
   }
 
+  const renderIcon = (item: typeof navItems[0]) => {
+    const IconComponent = item.icon
+    return <IconComponent className={`${shouldCollapse ? 'w-5 h-5' : 'w-4 h-4 mr-2'} flex-shrink-0`} />
+  }
+
   return (
-    <nav className="flex flex-col h-full">
-      <div className="px-6 py-6">
-        <h1 className="text-base font-semibold text-neutral-800">Buyer Workbench</h1>
+    <nav className={`flex flex-col h-full transition-all ${shouldCollapse ? 'w-16' : 'w-64'}`}>
+      <div className={`${shouldCollapse ? 'px-3 py-4' : 'px-6 py-6'} transition-all`}>
+        {!shouldCollapse && (
+          <h1 className="text-base font-semibold text-text">Buyer Workbench</h1>
+        )}
       </div>
       <div className="flex-1 py-2 px-3">
         <div className="space-y-1">
@@ -101,9 +131,11 @@ export function BuyerWorkbenchNav() {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center px-4 py-2.5 rounded-full text-sm transition-all ${classes}`}
+                className={`flex items-center ${shouldCollapse ? 'justify-center px-3' : 'px-4'} py-2.5 rounded-full text-sm transition-all ${classes}`}
+                title={shouldCollapse ? item.label : undefined}
               >
-                <span>{item.label}</span>
+                {renderIcon(item)}
+                {!shouldCollapse && <span>{item.label}</span>}
               </Link>
             )
           })}

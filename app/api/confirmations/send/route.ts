@@ -7,6 +7,10 @@ import { CaseState, CaseStatus } from '@/src/lib/supplier-agent/types'
 
 export const runtime = 'nodejs'
 
+// DEMO OVERRIDE — do not use in production
+// All outgoing supplier emails are redirected to this address for demo safety
+const DEMO_SUPPLIER_EMAIL = 'supplierbart@gmail.com'
+
 /**
  * POST /api/confirmations/send
  * 
@@ -40,46 +44,108 @@ export const runtime = 'nodejs'
  * 4) Confirm in Gmail UI (Lisa inbox) that email was sent and appears in correct thread.
  */
 export async function POST(request: NextRequest) {
+  console.log('[SEND_ROUTE] hit')
+  
   try {
     const body = await request.json()
     
+    console.log('[SEND_ROUTE] parsed body', {
+      caseId: body.caseId || null,
+      hasSubject: !!body.subject,
+      hasBody: !!body.body,
+      missingFieldsCount: Array.isArray(body.missingFields) ? body.missingFields.length : 0,
+      runInboxSearch: body.runInboxSearch !== false,
+      poNumber: body.poNumber || null,
+      lineId: body.lineId || null,
+      supplierEmail: body.supplierEmail || null,
+      intent: body.intent || null,
+      forceSend: body.forceSend === true,
+    })
+    
+    // Support two payload shapes:
+    // 1. Full payload: { caseId, poNumber, lineId, supplierEmail, missingFields, ... }
+    // 2. Minimal with caseId: { caseId, subject, body, ... } - will look up case
+    let caseId = body.caseId
+    let poNumber = body.poNumber
+    let lineId = body.lineId
+    let supplierEmail = body.supplierEmail
+    let missingFields = body.missingFields
+    
+    // If minimal payload, look up case
+    if (caseId && (!poNumber || !lineId || !supplierEmail || !missingFields)) {
+      const { getCase } = await import('@/src/lib/supplier-agent/store')
+      const caseData = getCase(caseId)
+      if (!caseData) {
+        console.log('[SEND_ROUTE] case not found', { caseId })
+        return NextResponse.json(
+          { ok: false, error: `Case ${caseId} not found` },
+          { status: 404 }
+        )
+      }
+      // Fill in missing fields from case
+      if (!poNumber) poNumber = caseData.po_number
+      if (!lineId) lineId = caseData.line_id
+      if (!supplierEmail) supplierEmail = caseData.supplier_email || ''
+      if (!missingFields) missingFields = Array.isArray(caseData.missing_fields) ? caseData.missing_fields : []
+    }
+    
     // Validate required fields
-    if (!body.caseId || !body.poNumber || !body.lineId || !body.supplierEmail || !body.missingFields) {
+    if (!caseId || !poNumber || !lineId || !supplierEmail || !missingFields) {
+      const missing: string[] = []
+      if (!caseId) missing.push('caseId')
+      if (!poNumber) missing.push('poNumber')
+      if (!lineId) missing.push('lineId')
+      if (!supplierEmail) missing.push('supplierEmail')
+      if (!missingFields) missing.push('missingFields')
+      console.log('[SEND_ROUTE] validation failed', { missing })
       return NextResponse.json(
-        { error: 'Missing required fields: caseId, poNumber, lineId, supplierEmail, missingFields' },
+        { ok: false, error: `Missing required fields: ${missing.join(', ')}` },
         { status: 400 }
       )
     }
     
     const {
-      caseId,
-      poNumber,
-      lineId,
-      supplierEmail,
       supplierName,
-      missingFields,
       optionalKeywords,
       runInboxSearch = true,
+      subject,
+      body: bodyText,
+      intent,
+      forceSend = false,
+      threadId: requestThreadId,
     } = body
     
-    // Load case
+    // Load case (already validated above, but ensure it exists)
     const caseData = getCase(caseId)
     if (!caseData) {
+      console.log('[SEND_ROUTE] case not found after validation', { caseId })
       return NextResponse.json(
-        { error: `Case ${caseId} not found` },
+        { ok: false, error: `Case ${caseId} not found` },
         { status: 404 }
       )
     }
     
-    // Generate email draft
-    const emailDraft = generateConfirmationEmail({
+    console.log('[SEND_ROUTE] resolved case details', {
       poNumber,
       lineId,
-      supplierName: supplierName || caseData.supplier_name,
       supplierEmail,
-      missingFields,
-      context: caseData.meta as any,
+      threadId: (caseData.meta as any)?.thread_id || (caseData.meta as any)?.gmail_threadId || null,
     })
+    
+    // Use provided subject/body if available (from follow-up draft), otherwise generate
+    let emailDraft: { subject: string; bodyText: string }
+    if (subject && bodyText) {
+      emailDraft = { subject, bodyText }
+    } else {
+      emailDraft = generateConfirmationEmail({
+        poNumber,
+        lineId,
+        supplierName: supplierName || caseData.supplier_name,
+        supplierEmail,
+        missingFields,
+        context: caseData.meta as any,
+      })
+    }
     
     // Log EMAIL_DRAFTED event
     addEvent(caseId, {
@@ -94,17 +160,142 @@ export async function POST(request: NextRequest) {
       },
     })
     
-    let action: 'REPLY_IN_THREAD' | 'SEND_NEW' | 'NO_OP' = 'SEND_NEW'
+    let action: 'REPLY_IN_THREAD' | 'SEND_NEW' | 'NO_OP' | 'sent' = 'SEND_NEW'
     let gmailMessageId: string | undefined
-    let threadId: string | undefined
+    let threadId: string | undefined = requestThreadId || (caseData.meta as any)?.thread_id || (caseData.meta as any)?.gmail_threadId || undefined
     let missingFieldsAsked: string[] = missingFields
     let searchResult: any = null
     let usedReply = false
-    let sentSubject = emailDraft.subject
-    let sentBodyText = emailDraft.bodyText
+    // Use provided subject/body if available, otherwise use draft
+    let sentSubject = subject || emailDraft.subject
+    let sentBodyText = bodyText || emailDraft.bodyText
     
-    // Run inbox search if requested
-    if (runInboxSearch) {
+    // If forceSend is true, bypass NO_OP logic and always send
+    // Also check request missingFields: if provided and non-empty, NOT confirmed
+    const isForced = forceSend === true
+    const requestHasMissingFields = Array.isArray(missingFields) && missingFields.length > 0
+    const isConfirmed = !requestHasMissingFields // If request says missingFields.length > 0, it's NOT confirmed
+    
+    // For follow-up intents with forceSend, always send as reply if threadId exists or can be found
+    if (intent === 'followup' && isForced) {
+      console.log('[SEND_ROUTE] bypass NO_OP due to forceSend')
+      
+      // For follow-ups, need to find the reply anchor (most recent inbound supplier message)
+      let replyToMessageId: string | undefined
+      let originalSubject: string | undefined
+      
+      // If threadId not provided but runInboxSearch is true, try to find it and reply anchor
+      if (runInboxSearch) {
+        try {
+          searchResult = await searchInboxForConfirmation({
+            caseId,
+            poNumber,
+            lineId,
+            supplierEmail: caseData.supplier_email || supplierEmail,
+            supplierDomain: caseData.supplier_domain || null,
+            optionalKeywords: optionalKeywords || [],
+            lookbackDays: 90,
+          })
+          
+          if (searchResult?.matchedThreadId) {
+            threadId = searchResult.matchedThreadId
+            console.log('[SEND_ROUTE] found threadId from inbox search', { threadId })
+          }
+          
+          // Find the most recent inbound supplier message from topCandidates
+          if (searchResult?.topCandidates && Array.isArray(searchResult.topCandidates)) {
+            const buyerEmail = (process.env.GMAIL_SENDER_EMAIL || '').toLowerCase()
+            
+            // Filter to inbound supplier messages (from != buyer)
+            const inboundSupplierMessages = searchResult.topCandidates
+              .filter(candidate => {
+                const fromEmail = (candidate.from || '').toLowerCase()
+                // Message is from supplier if from doesn't include buyer email
+                return !buyerEmail || !fromEmail.includes(buyerEmail)
+              })
+              .sort((a, b) => (b.date || 0) - (a.date || 0)) // Most recent first
+            
+            if (inboundSupplierMessages.length > 0) {
+              const anchor = inboundSupplierMessages[0]
+              replyToMessageId = anchor.messageId
+              originalSubject = anchor.subject || undefined
+              threadId = anchor.threadId || threadId
+              
+              console.log('[SEND_ROUTE] chosen reply anchor', {
+                replyToMessageId: anchor.messageId,
+                threadId: anchor.threadId,
+                from: anchor.from,
+                date: anchor.date ? new Date(anchor.date).toISOString() : null,
+              })
+            }
+          }
+        } catch (searchError) {
+          console.warn('[SEND_ROUTE] inbox search failed for follow-up, continuing with send', searchError)
+        }
+      }
+      
+      // Send as reply in thread if threadId exists, otherwise send new
+      if (threadId) {
+        action = 'REPLY_IN_THREAD'
+        usedReply = true
+        
+        console.log('[SEND_ROUTE] followup reply headers', {
+          threadId,
+          replyToMessageId,
+          subject: sentSubject,
+        })
+        
+        console.log('[SEND_ROUTE] sending followup reply', {
+          threadId,
+          replyToMessageId,
+          to: supplierEmail,
+          subject: sentSubject,
+        })
+        
+        // DEMO OVERRIDE — do not use in production
+        console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
+        const replyResult = await sendReplyInThread({
+          threadId: threadId!,
+          to: DEMO_SUPPLIER_EMAIL,
+          subject: sentSubject,
+          bodyText: sentBodyText,
+          replyToMessageId,
+          originalSubject,
+        })
+        
+        console.log('[SEND_ROUTE] gmail response', {
+          id: replyResult.gmailMessageId,
+          threadId: replyResult.threadId,
+        })
+        
+        gmailMessageId = replyResult.gmailMessageId
+        threadId = replyResult.threadId
+      } else {
+        // No threadId found, send as new email
+        action = 'SEND_NEW'
+        console.log('[SEND_ROUTE] sending followup as new email (no threadId)', {
+          to: supplierEmail,
+          subject: sentSubject,
+        })
+        
+        // DEMO OVERRIDE — do not use in production
+        console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
+        const sendResult = await sendNewEmail({
+          to: DEMO_SUPPLIER_EMAIL,
+          subject: sentSubject,
+          bodyText: sentBodyText,
+        })
+        
+        console.log('[SEND_ROUTE] gmail response', {
+          id: sendResult.gmailMessageId,
+          threadId: sendResult.threadId,
+        })
+        
+        gmailMessageId = sendResult.gmailMessageId
+        threadId = sendResult.threadId
+      }
+    } else if (runInboxSearch && !isForced) {
+      // Run inbox search if requested and not forced
       try {
         searchResult = await searchInboxForConfirmation({
           caseId,
@@ -116,8 +307,11 @@ export async function POST(request: NextRequest) {
           lookbackDays: 90,
         })
         
-        if (searchResult.classification === 'FOUND_CONFIRMED') {
-          // Found prior confirmation, no outreach needed
+        // Check if confirmed - use request missingFields if provided, otherwise use search result
+        const shouldSkip = searchResult.classification === 'FOUND_CONFIRMED' && !requestHasMissingFields
+        
+        if (shouldSkip) {
+          // Found prior confirmation, no outreach needed (only if request doesn't have missingFields)
           addEvent(caseId, {
             case_id: caseId,
             timestamp: Date.now(),
@@ -135,7 +329,9 @@ export async function POST(request: NextRequest) {
             },
           })
           
+          console.log('[SEND_ROUTE] NO_OP - found confirmed')
           return NextResponse.json({
+            ok: true,
             action: 'NO_OP',
             reason: 'FOUND_CONFIRMED',
             searchResult,
@@ -147,24 +343,38 @@ export async function POST(request: NextRequest) {
           missingFieldsAsked = searchResult.missingFields
           usedReply = true
           
-          // Regenerate email for only remaining missing fields
-          const replyEmail = generateConfirmationEmail({
-            poNumber,
-            lineId,
-            supplierName: supplierName || caseData.supplier_name,
-            supplierEmail,
-            missingFields: searchResult.missingFields,
-            context: caseData.meta as any,
-          })
+          // Use provided subject/body if available (from follow-up draft), otherwise regenerate
+          if (subject && bodyText) {
+            sentSubject = subject
+            sentBodyText = bodyText
+          } else {
+            // Regenerate email for only remaining missing fields
+            const replyEmail = generateConfirmationEmail({
+              poNumber,
+              lineId,
+              supplierName: supplierName || caseData.supplier_name,
+              supplierEmail,
+              missingFields: searchResult.missingFields,
+              context: caseData.meta as any,
+            })
+            
+            sentSubject = replyEmail.subject
+            sentBodyText = replyEmail.bodyText
+          }
           
-          sentSubject = replyEmail.subject
-          sentBodyText = replyEmail.bodyText
-          
+          // DEMO OVERRIDE — do not use in production
+          console.log('[SEND_ROUTE] about to call gmail (reply in thread)')
+          console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
           const replyResult = await sendReplyInThread({
             threadId: threadId!,
-            to: supplierEmail,
-            subject: replyEmail.subject,
-            bodyText: replyEmail.bodyText,
+            to: DEMO_SUPPLIER_EMAIL,
+            subject: sentSubject,
+            bodyText: sentBodyText,
+          })
+          
+          console.log('[SEND_ROUTE] gmail response (reply)', {
+            id: replyResult.gmailMessageId,
+            threadId: replyResult.threadId,
           })
           
           gmailMessageId = replyResult.gmailMessageId
@@ -172,33 +382,57 @@ export async function POST(request: NextRequest) {
         } else {
           // NOT_FOUND - send new email
           action = 'SEND_NEW'
+          console.log('[SEND_ROUTE] about to call gmail (new email)')
+          // DEMO OVERRIDE — do not use in production
+          console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
           const sendResult = await sendNewEmail({
-            to: supplierEmail,
+            to: DEMO_SUPPLIER_EMAIL,
             subject: emailDraft.subject,
             bodyText: emailDraft.bodyText,
+          })
+          
+          console.log('[SEND_ROUTE] gmail response (new)', {
+            id: sendResult.gmailMessageId,
+            threadId: sendResult.threadId,
           })
           
           gmailMessageId = sendResult.gmailMessageId
           threadId = sendResult.threadId
         }
       } catch (searchError) {
-        console.error('Error during inbox search, falling back to new email:', searchError)
+        console.error('[SEND_ROUTE] error during inbox search, falling back to new email:', searchError)
         // Fall through to send new email
+        console.log('[SEND_ROUTE] about to call gmail (fallback after search error)')
+        // DEMO OVERRIDE — do not use in production
+        console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
         const sendResult = await sendNewEmail({
-          to: supplierEmail,
+          to: DEMO_SUPPLIER_EMAIL,
           subject: emailDraft.subject,
           bodyText: emailDraft.bodyText,
+        })
+        
+        console.log('[SEND_ROUTE] gmail response (fallback)', {
+          id: sendResult.gmailMessageId,
+          threadId: sendResult.threadId,
         })
         
         gmailMessageId = sendResult.gmailMessageId
         threadId = sendResult.threadId
       }
-    } else {
-      // No inbox search, send new email
+    } else if (!isForced) {
+      // No inbox search and not forced, send new email
+      console.log('[SEND_ROUTE] about to call gmail (no inbox search)')
+      // DEMO OVERRIDE — do not use in production
+      console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
       const sendResult = await sendNewEmail({
-        to: supplierEmail,
+        to: DEMO_SUPPLIER_EMAIL,
         subject: emailDraft.subject,
         bodyText: emailDraft.bodyText,
+      })
+      
+      console.log('[SEND_ROUTE] gmail response (no search)', {
+        id: sendResult.gmailMessageId,
+        threadId: sendResult.threadId,
       })
       
       gmailMessageId = sendResult.gmailMessageId
@@ -219,6 +453,20 @@ export async function POST(request: NextRequest) {
         body_text: sentBodyText,
         received_at: Date.now(),
       })
+      
+      // Persist threadId and last sent message info to case.meta
+      if (threadId) {
+        const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
+        if (meta.thread_id !== threadId) {
+          meta.thread_id = threadId
+        }
+        meta.last_sent_message_id = gmailMessageId
+        meta.last_sent_thread_id = threadId
+        meta.last_sent_at = Date.now()
+        meta.last_sent_subject = sentSubject
+        updateCase(caseId, { meta })
+        console.log('[THREAD_PERSIST] send', { caseId, threadId, gmailMessageId })
+      }
     }
     
     // Log EMAIL_SENT event
@@ -247,17 +495,31 @@ export async function POST(request: NextRequest) {
       touch_count: caseData.touch_count + 1,
     })
     
-    return NextResponse.json({
-      action,
+    // Normalize action: if we actually sent, use 'sent'
+    const finalAction = gmailMessageId ? 'sent' : action
+    
+    const response = {
+      ok: true,
+      action: finalAction,
       gmailMessageId,
+      messageId: gmailMessageId, // alias for compatibility
       threadId,
       missingFieldsAsked,
       searchResult,
+    }
+    
+    console.log('[SEND_ROUTE] success', {
+      action: finalAction,
+      gmailMessageId,
+      threadId,
     })
+    
+    return NextResponse.json(response)
   } catch (error) {
-    console.error('Error in send confirmation API:', error)
+    const errorMsg = error instanceof Error ? error.message : 'Failed to send confirmation email'
+    console.error('[SEND_ROUTE] fatal error', error)
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to send confirmation email' },
+      { ok: false, error: errorMsg },
       { status: 500 }
     )
   }

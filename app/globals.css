@@ -1,3 +1,5 @@
+@import "./tokens.css";
+
 /* stylelint-disable-next-line at-rule-no-unknown */
 @tailwind base;
 /* stylelint-disable-next-line at-rule-no-unknown */
@@ -7,10 +9,17 @@
 
 /* Modern consumer-grade interface - calm, minimal, human */
 @layer base {
+  html {
+    @apply bg-bg text-text;
+  }
+  
   body {
-    @apply antialiased;
-    /* Base background for layered surfaces */
-    @apply bg-neutral-100/30;
+    @apply antialiased bg-bg text-text;
+  }
+  
+  *:focus-visible {
+    outline: 2px solid rgb(var(--ring) / 0.75);
+    outline-offset: 2px;
   }
 }
 
@@ -24,15 +33,80 @@
 }
 
 .companion-widget-expanded .overflow-y-auto::-webkit-scrollbar-thumb {
-  background: #d4d4d8;
+  background: rgb(var(--border));
   border-radius: 3px;
 }
 
 .companion-widget-expanded .overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background: #a3a3a8;
+  background: rgb(var(--text-subtle));
 }
 
-/* Soft shadows for elevation instead of borders */
+/* Soft shadows for elevation instead of borders - kept for backward compatibility */
+/* Prefer using Tailwind shadow-soft utility instead */
 .shadow-soft {
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.03), 0 1px 3px 0 rgb(0 0 0 / 0.08);
+  box-shadow: 0 1px 2px rgb(var(--shadow) / 0.06), 0 6px 18px rgb(var(--shadow) / 0.10);
+}
+
+/* Animated backdrop keyframes for login page */
+@keyframes floatSlow {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(18px, -22px, 0) scale(1.05);
+  }
+  100% {
+    transform: translate3d(-14px, 16px, 0) scale(1.02);
+  }
+}
+
+@keyframes floatSlow2 {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-22px, 18px, 0) scale(1.06);
+  }
+  100% {
+    transform: translate3d(20px, -14px, 0) scale(1.03);
+  }
+}
+
+@keyframes floatSlow3 {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(24px, 20px, 0) scale(1.04);
+  }
+  100% {
+    transform: translate3d(-18px, -22px, 0) scale(1.02);
+  }
+}
+
+@keyframes sheen {
+  0% {
+    transform: translateX(-30%) translateY(0);
+  }
+  100% {
+    transform: translateX(30%) translateY(-10%);
+  }
+}
+
+/* Respect prefers-reduced-motion: disable animations when enabled */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transform: none !important;
+  }
+  
+  /* Specifically disable backdrop animations */
+  [aria-hidden="true"] > div {
+    animation: none !important;
+    transform: none !important;
+  }
 }

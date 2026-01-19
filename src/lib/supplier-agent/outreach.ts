@@ -23,6 +23,8 @@ export interface SendReplyParams {
   to: string
   subject: string
   bodyText: string
+  replyToMessageId?: string // Gmail message ID to reply to (for In-Reply-To header)
+  originalSubject?: string // Original subject (without Re:) for subject normalization
 }
 
 export interface SendEmailResult {
@@ -51,8 +53,13 @@ function buildRawEmail({
   const fromEmail = from || process.env.GMAIL_SENDER_EMAIL || 'buyer@example.com'
   const date = new Date().toUTCString()
   
-  // Normalize subject and body text before sending
-  const normalizedSubject = normalizeEmailText(subject)
+  // Normalize subject: ensure "Re:" prefix if replying
+  let normalizedSubject = normalizeEmailText(subject)
+  if (inReplyTo && !normalizedSubject.toLowerCase().startsWith('re:')) {
+    normalizedSubject = `Re: ${normalizedSubject}`
+  }
+  
+  // Normalize body text before sending
   const normalizedBodyText = normalizeEmailText(bodyText)
   
   let headers = [
@@ -65,11 +72,17 @@ function buildRawEmail({
   ]
   
   if (inReplyTo) {
-    headers.push(`In-Reply-To: ${inReplyTo}`)
+    // Format In-Reply-To with angle brackets (RFC 2822)
+    const inReplyToFormatted = inReplyTo.startsWith('<') ? inReplyTo : `<${inReplyTo}>`
+    headers.push(`In-Reply-To: ${inReplyToFormatted}`)
   }
   
   if (references) {
-    headers.push(`References: ${references}`)
+    // Format References (may contain multiple message IDs, ensure angle brackets)
+    const refFormatted = references.split(/\s+/).map(ref => {
+      return ref.startsWith('<') ? ref : `<${ref}>`
+    }).join(' ')
+    headers.push(`References: ${refFormatted}`)
   }
   
   return `${headers.join('\r\n')}\r\n\r\n${normalizedBodyText}`
@@ -131,42 +144,86 @@ export async function sendReplyInThread(params: SendReplyParams): Promise<SendEm
   const gmail = await getGmailClient()
   const fromEmail = process.env.GMAIL_SENDER_EMAIL || 'buyer@example.com'
   
-  // Try to get the original message to extract In-Reply-To and References headers
+  // Use provided replyToMessageId if available, otherwise try to fetch from thread
   let inReplyTo: string | undefined
   let references: string | undefined
   
-  try {
-    // Get thread messages to find the most recent one
-    const thread = await gmail.users.threads.get({
-      userId: 'me',
-      id: params.threadId,
-      format: 'full',
-    })
+  if (params.replyToMessageId) {
+    // Use provided messageId (should already be a Gmail message ID)
+    inReplyTo = params.replyToMessageId
     
-    const messages = thread.data.messages || []
-    if (messages.length > 0) {
-      // Get the most recent message in the thread
-      const latestMessage = messages[messages.length - 1]
-      const headers = latestMessage.payload?.headers || []
+    // Try to fetch the message to get its Message-ID header and References chain
+    try {
+      const msg = await gmail.users.messages.get({
+        userId: 'me',
+        id: params.replyToMessageId,
+        format: 'full',
+      })
       
+      const headers = msg.data.payload?.headers || []
       const messageIdHeader = headers.find((h: any) => h.name === 'Message-ID')?.value
       const referencesHeader = headers.find((h: any) => h.name === 'References')?.value
       
       if (messageIdHeader) {
+        // Use the actual Message-ID header value (may be different format)
         inReplyTo = messageIdHeader
         references = referencesHeader 
           ? `${referencesHeader} ${messageIdHeader}`
           : messageIdHeader
       }
+    } catch (error) {
+      // If we can't fetch the message, use the Gmail message ID as-is
+      console.warn('[AGENT_SEND] could not fetch message for reply headers, using messageId as-is:', error)
+      references = params.replyToMessageId
     }
-  } catch (error) {
-    // If we can't get thread details, continue without In-Reply-To/References
-    console.warn('Could not fetch thread details for reply headers:', error)
+    
+    console.log('[AGENT_SEND] using reply headers', {
+      replyToMessageId: params.replyToMessageId,
+      inReplyTo,
+      threadId: params.threadId,
+    })
+  } else {
+    // Fallback: try to get from thread (existing behavior)
+    try {
+      // Get thread messages to find the most recent one
+      const thread = await gmail.users.threads.get({
+        userId: 'me',
+        id: params.threadId,
+        format: 'full',
+      })
+      
+      const messages = thread.data.messages || []
+      if (messages.length > 0) {
+        // Get the most recent message in the thread
+        const latestMessage = messages[messages.length - 1]
+        const headers = latestMessage.payload?.headers || []
+        
+        const messageIdHeader = headers.find((h: any) => h.name === 'Message-ID')?.value
+        const referencesHeader = headers.find((h: any) => h.name === 'References')?.value
+        
+        if (messageIdHeader) {
+          inReplyTo = messageIdHeader
+          references = referencesHeader 
+            ? `${referencesHeader} ${messageIdHeader}`
+            : messageIdHeader
+        }
+      }
+    } catch (error) {
+      // If we can't get thread details, continue without In-Reply-To/References
+      console.warn('[AGENT_SEND] could not fetch thread details for reply headers:', error)
+    }
+  }
+  
+  // Use originalSubject if provided for subject normalization, otherwise use params.subject
+  let subject = params.subject
+  if (params.originalSubject && params.originalSubject && !subject.toLowerCase().startsWith('re:')) {
+    // If we have original subject and current subject doesn't have Re:, add it
+    subject = `Re: ${params.originalSubject}`
   }
   
   const rawEmail = buildRawEmail({
     to: params.to,
-    subject: params.subject,
+    subject: subject,
     bodyText: params.bodyText,
     from: fromEmail,
     inReplyTo,

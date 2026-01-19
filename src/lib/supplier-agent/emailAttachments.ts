@@ -8,8 +8,10 @@
  */
 
 import 'server-only'
+import { createHash } from 'crypto'
 
 import { getGmailClient } from '../gmail/client'
+import { getDb, hasColumn } from './storage/sqlite'
 import { getCase, listMessages, addAttachment, addEvent } from './store'
 import type { SupplierChaseCase } from './types'
 
@@ -33,6 +35,9 @@ export interface RetrieveAttachmentsResult {
   caseId: string
   retrievedCount: number
   attachments: PdfAttachmentEvidence[]
+  inserted: number
+  reused: number
+  skipped: number
 }
 
 /**
@@ -137,11 +142,21 @@ export async function retrievePdfAttachmentsFromThread(
         caseId,
         retrievedCount: 0,
         attachments: [],
+        inserted: 0,
+        reused: 0,
+        skipped: 0,
       }
     }
     
     const pdfAttachments: PdfAttachmentEvidence[] = []
     const attachmentIds: string[] = []
+    let inserted = 0
+    let reused = 0
+    let skipped = 0
+    
+    // Retrieval guard: Check existing attachments for this thread to avoid duplicates
+    const db = getDb()
+    const hasContentSha256 = hasColumn('attachments', 'content_sha256')
     
     // Process each message in the thread
     for (const message of messages) {
@@ -216,39 +231,105 @@ export async function retrievePdfAttachmentsFromThread(
             continue
           }
           
-          // Decode base64url to base64 (Gmail API uses base64url encoding)
-          // base64url uses - and _ instead of + and /, and no padding
+          // ALWAYS compute content_sha256 + size_bytes immediately from decoded bytes
+          // Use decodeBase64UrlToBuffer helper to match rehash logic
+          const { decodeBase64UrlToBuffer } = require('./store')
+          const binaryData = decodeBase64UrlToBuffer(attachmentData)
+          const sizeBytes = binaryData.length
+          const contentHash = createHash('sha256').update(binaryData).digest('hex')
+          
+          // Store base64-encoded data (normalized from base64url for storage)
           const base64Data = attachmentData.replace(/-/g, '+').replace(/_/g, '/')
           const padding = base64Data.length % 4
           const paddedBase64 = base64Data + (padding ? '='.repeat(4 - padding) : '')
           
-          console.log(`[ATTACHMENT_RETRIEVAL] Downloaded ${paddedBase64.length} base64 characters for ${pdfPart.filename}`)
+          // Check for legacy rows: if binary_data_base64 exists but content_sha256 is null, compute and update
+          if (hasContentSha256) {
+            const legacyRows = db.prepare(`
+              SELECT attachment_id, binary_data_base64
+              FROM attachments
+              WHERE message_id = ? AND filename = ? AND mime_type = 'application/pdf'
+                AND binary_data_base64 IS NOT NULL
+                AND content_sha256 IS NULL
+            `).all(messageId, pdfPart.filename) as Array<{
+              attachment_id: string
+              binary_data_base64: string
+            }>
+            
+            for (const legacyRow of legacyRows) {
+              try {
+                const legacyBinary = decodeBase64UrlToBuffer(legacyRow.binary_data_base64)
+                const legacyHash = createHash('sha256').update(legacyBinary).digest('hex')
+                const legacySize = legacyBinary.length
+                db.prepare(`
+                  UPDATE attachments
+                  SET content_sha256 = ?, size_bytes = ?
+                  WHERE attachment_id = ?
+                `).run(legacyHash, legacySize, legacyRow.attachment_id)
+                console.log(`[ATTACHMENT_RETRIEVAL] updated legacy row ${legacyRow.attachment_id} with hash`)
+              } catch (err) {
+                console.warn(`[ATTACHMENT_RETRIEVAL] failed to update legacy row ${legacyRow.attachment_id}:`, err)
+              }
+            }
+          }
           
           // Get message received date
           const headers = message.payload?.headers || []
           const dateHeader = headers.find((h: any) => h.name === 'Date')?.value || null
           const receivedAt = message.internalDate ? parseInt(message.internalDate, 10) : Date.now()
           
+          // Check if attachment with this content_sha256 already exists (before calling addAttachment)
+          let wasReused = false
+          if (hasContentSha256) {
+            const existingByHash = db.prepare(`
+              SELECT attachment_id FROM attachments WHERE content_sha256 = ? LIMIT 1
+            `).get(contentHash) as { attachment_id: string } | undefined
+            
+            if (existingByHash) {
+              wasReused = true
+              reused++
+              console.log(`[ATTACHMENT_RETRIEVAL] reuse by hash {sha_prefix: ${contentHash.substring(0, 16)}..., attachment_id: ${existingByHash.attachment_id}}`)
+              // Still call addAttachment to update any missing fields, but we know it's a reuse
+            }
+          }
+          
           // Create attachment ID (use Gmail attachment ID if available, otherwise generate)
           const attachmentId = pdfPart.attachmentId || `${Date.now()}-${Math.random().toString(36).substring(7)}`
           
-          // Store attachment in database
+          // Store attachment in database (idempotent upsert with content hash as primary identity)
           // Note: message_id is passed as first parameter, not in attachment object
+          // addAttachment() will check by content_sha256 first and reuse existing row if found
           const storedAttachment = addAttachment(messageId, {
             attachment_id: attachmentId,
             filename: pdfPart.filename,
             mime_type: 'application/pdf',
             gmail_attachment_id: pdfPart.attachmentId,
             binary_data_base64: paddedBase64, // Store base64-encoded PDF (temporary for downstream parsing)
+            content_sha256: contentHash, // SHA256 hash for content-based deduplication (PRIMARY IDENTITY)
+            size_bytes: sizeBytes, // Size in bytes
             text_extract: null, // Will be populated during PDF parsing
             parsed_fields_json: null,
             parse_confidence_json: null,
           })
           
-          console.log(`[ATTACHMENT_RETRIEVAL] Stored attachment in database:`, {
+          // Track if this was actually inserted (new row) or reused (existing row)
+          if (!wasReused) {
+            // Check if the returned attachment_id matches what we tried to insert
+            // If it doesn't match, it means addAttachment found an existing row by hash
+            if (storedAttachment.attachment_id === attachmentId) {
+              inserted++
+            } else {
+              reused++
+              wasReused = true
+            }
+          }
+          
+          console.log(`[ATTACHMENT_RETRIEVAL] ${wasReused ? 'reused' : 'inserted'} attachment:`, {
             attachment_id: storedAttachment.attachment_id,
             filename: pdfPart.filename,
             messageId: messageId,
+            sha256: contentHash.substring(0, 16) + '...',
+            size_bytes: sizeBytes,
           })
           
           // Create evidence object
@@ -300,10 +381,18 @@ export async function retrievePdfAttachmentsFromThread(
       })
     }
     
+    // Counts are already tracked during the loop above (inserted, reused, skipped)
+    // Return the counts from the retrieval process
+    
+    console.log(`[ATTACHMENT_RETRIEVAL] summary {inserted: ${inserted}, reused: ${reused}, skipped: ${skipped}, threadId: ${threadId}, caseId: ${caseId}}`)
+    
     return {
       caseId,
       retrievedCount: pdfAttachments.length,
       attachments: pdfAttachments,
+      inserted,
+      reused,
+      skipped,
     }
   } catch (error) {
     console.error(`Error retrieving attachments from thread ${threadId}:`, error)

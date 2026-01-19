@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { searchInboxForConfirmation } from '@/src/lib/supplier-agent/inboxSearch'
-import { getCase } from '@/src/lib/supplier-agent/store'
+import { getCase, updateCase } from '@/src/lib/supplier-agent/store'
 
 export const runtime = 'nodejs'
 
@@ -41,6 +41,17 @@ export async function POST(request: NextRequest) {
       optionalKeywords: body.optionalKeywords || [],
       lookbackDays: body.lookbackDays || 90,
     })
+    
+    // Persist threadId if found
+    if (result.matchedThreadId) {
+      const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
+      if (meta.thread_id !== result.matchedThreadId && !caseData.thread_id) {
+        // Persist in meta if thread_id column doesn't exist
+        meta.thread_id = result.matchedThreadId
+        updateCase(caseData.case_id, { meta })
+        console.log('[THREAD_PERSIST] inbox-search', { caseId: caseData.case_id, threadId: result.matchedThreadId })
+      }
+    }
     
     return NextResponse.json(result)
   } catch (error) {

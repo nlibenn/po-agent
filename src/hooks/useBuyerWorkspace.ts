@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { parseFile, ParseResult } from '@/src/lib/parseUpload'
 import { NormalizedPORow } from '@/src/lib/po'
 import { formatRelativeTime } from '@/src/lib/utils/relativeTime'
+import { getLatestPODocument } from '@/src/lib/driveStorage'
 
 const STORAGE_KEY = 'buyer_workspace_v1'
 
@@ -102,15 +103,25 @@ export function useBuyerWorkspace(): UseBuyerWorkspaceReturn {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Load from storage on mount
-  useEffect(() => {
-    const loadData = async () => {
-      await loadFromStorage()
-    }
-    loadData()
-  }, [])
-
+  // Define loadFromStorage BEFORE useEffect that uses it
   const loadFromStorage = useCallback(async () => {
+    // PRIMARY SOURCE: Load from Drive storage (single source of truth)
+    const driveDoc = getLatestPODocument()
+    if (driveDoc && driveDoc.parsedRows) {
+      // Always re-normalize to ensure consistency
+      const { normalizeRow } = await import('@/src/lib/po')
+      const normalized = driveDoc.parsedRows.map((row: Record<string, any>) => normalizeRow(row))
+      setRows(driveDoc.parsedRows)
+      setNormalizedRows(normalized)
+      setFilename(driveDoc.name)
+      setUpdatedAt(driveDoc.uploadedAt)
+      setSource('local')
+      setError(null)
+      return
+    }
+
+    // FALLBACK: Load from legacy workspace storage (migration support only)
+    // This path exists for backward compatibility but should not be written to anymore
     const data = loadFromLocalStorage()
     if (data) {
       // Always re-normalize to ensure consistency
@@ -133,6 +144,34 @@ export function useBuyerWorkspace(): UseBuyerWorkspaceReturn {
     }
   }, [])
 
+  // Load from storage on mount
+  useEffect(() => {
+    const loadData = async () => {
+      await loadFromStorage()
+    }
+    loadData()
+
+    // Listen for Drive storage changes (works across tabs)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'drive_documents_v1') {
+        loadFromStorage()
+      }
+    }
+    
+    // Listen for custom storage event (works in same tab)
+    const handleCustomStorageChange = () => {
+      loadFromStorage()
+    }
+    
+    window.addEventListener('storage', handleStorageChange)
+    window.addEventListener('driveStorageChanged', handleCustomStorageChange)
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      window.removeEventListener('driveStorageChanged', handleCustomStorageChange)
+    }
+  }, [loadFromStorage])
+
   const saveToStorage = useCallback(() => {
     if (rows.length === 0 || !filename || !updatedAt) {
       return
@@ -150,6 +189,9 @@ export function useBuyerWorkspace(): UseBuyerWorkspaceReturn {
   }, [rows, filename, updatedAt])
 
   const uploadReplace = useCallback(async (file: File) => {
+    // DEPRECATED: Uploads should go through Drive page only
+    // This function is kept for backward compatibility but no longer writes to buyer_workspace_v1
+    // Drive storage (drive_documents_v1) is now the single source of truth
     setIsLoading(true)
     setError(null)
 
@@ -163,12 +205,10 @@ export function useBuyerWorkspace(): UseBuyerWorkspaceReturn {
       setUpdatedAt(now)
       setSource('local')
 
-      // Save to localStorage
-      saveToLocalStorage({
-        rows: result.rows,
-        filename: file.name,
-        updatedAt: now,
-      })
+      // NO LONGER saving to buyer_workspace_v1 - Drive storage is single source of truth
+      // If this function is called, it means Drive already saved the document
+      // We just update state to reflect it immediately
+      
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to parse file'
       setError(errorMessage)

@@ -1,0 +1,33 @@
+/**
+ * Supplier Chase Agent Data Access Layer
+ */
+
+import { getDb, hasColumn } from './storage/sqlite'
+import type {
+  SupplierChaseCase,
+  SupplierChaseCaseUpdate,
+  SupplierChaseEvent,
+  SupplierChaseEventInput,
+  SupplierChaseMessage,
+  SupplierChaseMessageInput,
+  SupplierChaseAttachment,
+  SupplierChaseAttachmentInput,
+  SupplierChaseAttachmentCreateInput,
+} from './types'
+
+/**
+ * Decode base64url-encoded string to Buffer.
+ * Handles base64url encoding (Gmail API format) by converting to standard base64.
+ * 
+ * @param base64url - Base64url-encoded string (may contain - and _ instead of + and /)
+ * @returns Buffer of decoded binary data
+ */
+export function decodeBase64UrlToBuffer(base64url: string): Buffer {
+  // Replace base64url characters with standard base64
+  const base64Data = base64url.replace(/-/g, '+').replace(/_/g, '/')
+  // Add padding if needed (base64 requires length to be multiple of 4)
+  const padding = base64Data.length % 4
+  const paddedBase64 = base64Data + (padding ? '='.repeat(4 - padding) : '')
+  // Decode to binary buffer
+  return Buffer.from(paddedBase64, 'base64')
+}

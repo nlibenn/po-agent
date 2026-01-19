@@ -32,6 +32,10 @@ export type EventType =
   | 'ATTACHMENT_INGESTED'
   | 'PDF_TEXT_EXTRACTED'
   | 'PDF_PARSED'
+  | 'PARSE_RESULT'
+  | 'APPLY_UPDATES'
+  | 'MANUAL_EDIT'
+  | 'EMAIL_RECEIVED'
   | 'CASE_RESOLVED'
   | 'CASE_MARKED_UNRESPONSIVE'
   | 'CASE_NEEDS_BUYER'
@@ -103,3 +107,6 @@ export type SupplierChaseEventInput = Omit<SupplierChaseEvent, 'event_id'>
 export type SupplierChaseMessageInput = Omit<SupplierChaseMessage, 'message_id' | 'created_at'>
 
 export type SupplierChaseAttachmentInput = Omit<SupplierChaseAttachment, 'attachment_id' | 'created_at'>
+
+// Type for creating attachments where message_id is provided separately
+export type SupplierChaseAttachmentCreateInput = Omit<SupplierChaseAttachmentInput, 'message_id'> & { attachment_id?: string }

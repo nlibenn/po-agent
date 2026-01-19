@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
-import { deriveExceptions, Exception, generateDraftMessage, computeTriage, TriageResult } from '../../../src/lib/po'
+import { deriveExceptions, Exception, generateDraftMessage, computeTriage, TriageResult } from '@/src/lib/po'
 import { useWorkspace } from '@/components/WorkspaceProvider'
 
 export default function ExceptionPage({
@@ -24,7 +24,7 @@ export default function ExceptionPage({
 
   useEffect(() => {
     if (!normalizedRows || normalizedRows.length === 0) {
-      setError('No workspace data found. Please upload a CSV or Excel file first.')
+      setError('No workspace data found. Please upload a CSV or Excel file in Drive.')
       setErrorType('no_data')
       setLoading(false)
       return
@@ -107,8 +107,8 @@ export default function ExceptionPage({
   }
 
   if (error || !exception || !normalizedRow || !triage) {
-    const backLink = errorType === 'no_data' ? '/' : '/exceptions'
-    const backText = errorType === 'no_data' ? '← Return to upload page' : '← Return to exceptions'
+    const backLink = errorType === 'no_data' ? '/drive' : '/exceptions'
+    const backText = errorType === 'no_data' ? '← Return to Drive' : '← Return to exceptions'
     
     return (
       <div className="h-full flex items-center justify-center px-6">
@@ -268,13 +268,21 @@ export default function ExceptionPage({
             <div className="bg-white/70 rounded-3xl shadow-sm">
               <div className="px-10 py-8">
                 <div className="flex items-center justify-between mb-6">
-                  <Link 
-                    href="/exceptions"
-                    className="inline-flex items-center gap-2 text-sm font-medium text-neutral-600 hover:text-neutral-800 transition-colors"
-                  >
-                    <ArrowLeft className="h-4 w-4" />
-                    Back to exceptions
-                  </Link>
+                    <Link 
+                      href="/exceptions"
+                      className="inline-flex items-center gap-2 text-sm font-medium text-neutral-600 hover:text-neutral-800 transition-colors"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                      Back to exceptions
+                    </Link>
+                    {errorType === 'no_data' && (
+                      <Link 
+                        href="/drive"
+                        className="inline-flex items-center gap-2 text-sm font-medium text-neutral-700 hover:text-neutral-900 transition-colors"
+                      >
+                        Go to Drive
+                      </Link>
+                    )}
                   <div className="text-sm text-neutral-500">
                     PO {exception.po_id} • Line {exception.line_id}
                   </div>

@@ -1,0 +1,59 @@
+/* Warm Intelligence (Celadon) Design Tokens */
+
+:root {
+  --bg: 246 245 241;              /* #F6F5F1 parchment */
+  --surface: 255 255 255;         /* #FFFFFF */
+  --surface-2: 250 249 247;       /* #FAF9F7 */
+  --surface-tint: 244 248 247;    /* #F4F8F7 */
+
+  --text: 47 47 47;               /* #2F2F2F */
+  --text-muted: 102 106 109;      /* #666A6D */
+  --text-subtle: 130 134 137;     /* #828689 */
+
+  --border: 225 222 216;          /* #E1DED8 */
+  --shadow: 16 24 40;             /* used with alpha */
+
+  --primary: 143 185 177;         /* #8FB9B1 celadon */
+  --primary-strong: 110 159 151;  /* #6E9F97 */
+  --primary-deep: 63 111 104;     /* #3F6F68 */
+
+  --success: 111 164 143;         /* #6FA48F */
+  --warning: 196 138 106;         /* #C48A6A clay */
+  --danger: 176 92 92;            /* #B05C5C muted brick */
+
+  --ring: 110 159 151;            /* #6E9F97 */
+  --link: 63 111 104;             /* #3F6F68 */
+
+  --badge-bg: 244 248 247;        /* #F4F8F7 */
+  --badge-text: 63 111 104;       /* #3F6F68 */
+
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+.dark {
+  --bg: 17 19 20;                 /* #111314 */
+  --surface: 24 26 27;            /* #181A1B */
+  --surface-2: 28 30 31;          /* #1C1E1F */
+  --surface-tint: 22 30 29;       /* #161E1D */
+
+  --text: 235 236 235;            /* #EBECEB */
+  --text-muted: 185 190 193;      /* #B9BEC1 */
+  --text-subtle: 145 152 156;     /* #91989C */
+
+  --border: 45 49 50;             /* #2D3132 */
+
+  --primary: 159 200 190;         /* #9FC8BE */
+  --primary-strong: 143 185 177;  /* #8FB9B1 */
+  --primary-deep: 110 159 151;    /* #6E9F97 */
+
+  --warning: 211 160 137;         /* #D3A089 */
+  --danger: 214 120 120;          /* #D67878 */
+
+  --ring: 159 200 190;            /* #9FC8BE */
+  --link: 159 200 190;            /* #9FC8BE */
+
+  --badge-bg: 22 30 29;           /* #161E1D */
+  --badge-text: 159 200 190;      /* #9FC8BE */
+}

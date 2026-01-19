@@ -15,32 +15,23 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.error('OAuth error:', error)
-      return NextResponse.json(
-        { error: `OAuth error: ${error}` },
-        { status: 400 }
-      )
+      // Redirect to login with error parameter
+      return NextResponse.redirect(new URL('/login?error=1', request.url))
     }
 
     if (!code) {
-      return NextResponse.json(
-        { error: 'No authorization code provided' },
-        { status: 400 }
-      )
+      // Redirect to login with error parameter
+      return NextResponse.redirect(new URL('/login?error=1', request.url))
     }
 
     // Exchange code for tokens
     await exchangeCodeForTokens(code)
 
-    // Return success response
-    return NextResponse.json({
-      success: true,
-      message: 'Gmail OAuth tokens saved successfully',
-    })
+    // Redirect to /home after successful authentication
+    return NextResponse.redirect(new URL('/home', request.url))
   } catch (error) {
     console.error('Error in Gmail OAuth callback:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to complete OAuth flow' },
-      { status: 500 }
-    )
+    // Redirect to login with error parameter
+    return NextResponse.redirect(new URL('/login?error=1', request.url))
   }
 }

@@ -7,13 +7,13 @@ import {
   computeTriage, 
   deriveExceptions,
   Exception
-} from '../../src/lib/po'
+} from '@/src/lib/po'
 import { 
   ExceptionInboxItem,
   exceptionToInboxItem,
   filterActiveExceptions,
   sortExceptionsByPriority
-} from '../../src/lib/exceptionInbox'
+} from '@/src/lib/exceptionInbox'
 import { ExceptionInboxRow } from '@/components/ExceptionInboxRow'
 import { ExceptionSidePanel } from '@/components/ExceptionSidePanel'
 import { useWorkspace } from '@/components/WorkspaceProvider'
@@ -108,13 +108,21 @@ export default function ExceptionsPage() {
       <div className="h-full">
         <div className="max-w-7xl mx-auto px-8 py-8">
           <div className="mb-10">
-            <h1 className="text-2xl font-semibold text-neutral-800 mb-2">Exceptions</h1>
-            <p className="text-sm text-neutral-600">Review and resolve purchase order exceptions</p>
+            <h1 className="text-2xl font-semibold text-text mb-2">Exceptions</h1>
+            <p className="text-sm text-text-muted">Review and resolve purchase order exceptions</p>
           </div>
-          <div className="bg-white/70 rounded-3xl shadow-sm px-12 py-16 text-center max-w-lg mx-auto">
+          <div className="bg-surface rounded-3xl shadow-soft border border-border/70 px-12 py-16 text-center max-w-lg mx-auto">
             <div className="space-y-6">
-              <div className="text-neutral-700 mb-8">No workspace data found. <Link href="/home" className="text-neutral-800 underline hover:text-neutral-900">Upload a CSV or Excel file</Link> to detect purchase order exceptions.</div>
-              <p className="text-xs text-neutral-400">Data processed locally in your browser</p>
+              <div className="text-text font-medium text-lg mb-2">No data loaded</div>
+              <div className="text-sm text-text-muted mb-8">
+                Upload a PO dataset in Drive to populate Exceptions.
+              </div>
+              <Link
+                href="/drive"
+                className="inline-block px-5 py-2.5 rounded-xl text-sm font-medium text-surface bg-primary-deep hover:bg-primary-deep/90 transition-colors shadow-sm"
+              >
+                Go to Drive
+              </Link>
             </div>
           </div>
         </div>
@@ -128,35 +136,35 @@ export default function ExceptionsPage() {
         <div className="max-w-7xl mx-auto px-8 py-10">
         {/* Primary interaction surface - calm surface */}
         <div className="mb-10">
-            <h1 className="text-2xl font-semibold text-neutral-800 mb-2">Exception Inbox</h1>
-            <p className="text-sm text-neutral-600">Review purchase order exceptions and agent actions</p>
+            <h1 className="text-2xl font-semibold text-text mb-2">Exception Inbox</h1>
+            <p className="text-sm text-text-muted">Review purchase order exceptions and agent actions</p>
         </div>
 
           {/* Status Summary - elevated card surface */}
           {inboxItems.length > 0 && (
-            <div className="bg-white/70 rounded-2xl shadow-sm px-8 py-6 mb-8">
+            <div className="bg-surface rounded-2xl shadow-soft border border-border/70 px-8 py-6 mb-8">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="p-5 rounded-xl bg-neutral-50/50 shadow-sm">
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Awaiting buyer</div>
-                  <div className={`text-2xl font-semibold text-right ${statusCounts.awaiting_buyer === 0 ? 'text-neutral-400' : 'text-neutral-800'}`}>
+                <div className="p-5 rounded-xl bg-surface-2 shadow-sm border border-border/50">
+                  <div className="text-xs font-medium text-text-subtle uppercase tracking-wide mb-2">Awaiting buyer</div>
+                  <div className={`text-2xl font-semibold text-right ${statusCounts.awaiting_buyer === 0 ? 'text-text-subtle' : 'text-text'}`}>
                     {statusCounts.awaiting_buyer}
                   </div>
                 </div>
-                <div className="p-5 rounded-xl bg-neutral-50/50 shadow-sm">
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Blocked</div>
-                  <div className={`text-2xl font-semibold text-right ${statusCounts.blocked === 0 ? 'text-neutral-400' : 'text-neutral-800'}`}>
+                <div className="p-5 rounded-xl bg-surface-2 shadow-sm border border-border/50">
+                  <div className="text-xs font-medium text-text-subtle uppercase tracking-wide mb-2">Blocked</div>
+                  <div className={`text-2xl font-semibold text-right ${statusCounts.blocked === 0 ? 'text-text-subtle' : 'text-text'}`}>
                     {statusCounts.blocked}
                   </div>
                 </div>
-                <div className="p-5 rounded-xl bg-neutral-50/50 shadow-sm">
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Resolved</div>
-                  <div className="text-2xl font-semibold text-right text-neutral-600">
+                <div className="p-5 rounded-xl bg-surface-2 shadow-sm border border-border/50">
+                  <div className="text-xs font-medium text-text-subtle uppercase tracking-wide mb-2">Resolved</div>
+                  <div className="text-2xl font-semibold text-right text-text-muted">
                     {statusCounts.resolved}
                   </div>
                 </div>
-                <div className="p-5 rounded-xl bg-neutral-100/50 shadow-sm">
-                  <div className="text-xs font-medium text-neutral-500 uppercase tracking-wide mb-2">Total active</div>
-                  <div className="text-2xl font-semibold text-right text-neutral-800">
+                <div className="p-5 rounded-xl bg-surface-tint shadow-sm border border-border/50">
+                  <div className="text-xs font-medium text-text-subtle uppercase tracking-wide mb-2">Total active</div>
+                  <div className="text-2xl font-semibold text-right text-text">
                     {statusCounts.total}
                   </div>
                 </div>
@@ -176,9 +184,9 @@ export default function ExceptionsPage() {
             ))}
           </div>
         ) : (
-          <div className="bg-white/70 rounded-3xl shadow-sm px-12 py-20 text-center max-w-xl mx-auto">
-            <div className="text-neutral-700 mb-2 font-medium">No exceptions found</div>
-            <div className="text-sm text-neutral-500">All purchase order lines appear normal.</div>
+          <div className="bg-surface rounded-3xl shadow-soft border border-border/70 px-12 py-20 text-center max-w-xl mx-auto">
+            <div className="text-text mb-2 font-medium">No exceptions found</div>
+            <div className="text-sm text-text-subtle">All purchase order lines appear normal.</div>
           </div>
         )}
         </div>
