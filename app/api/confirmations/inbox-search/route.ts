@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     // Persist threadId if found
     if (result.matchedThreadId) {
       const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
-      if (meta.thread_id !== result.matchedThreadId && !caseData.thread_id) {
+      if (meta.thread_id !== result.matchedThreadId) {
         // Persist in meta if thread_id column doesn't exist
         meta.thread_id = result.matchedThreadId
         updateCase(caseData.case_id, { meta })
