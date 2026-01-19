@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
     
     // Only use email text if no PDF text is available
     if (attachmentIdsWithText.length === 0) {
-      msgRow = db
+      msgRow = (db
         .prepare(
           `
           SELECT message_id, subject, body_text, received_at, created_at
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
           LIMIT 1
         `
         )
-        .get(caseId) as MsgRow | null
+        .get(caseId) as MsgRow | null) ?? undefined
     }
 
     const emailText = msgRow ? [msgRow.subject, msgRow.body_text].filter(Boolean).join('\n\n').trim() : ''
