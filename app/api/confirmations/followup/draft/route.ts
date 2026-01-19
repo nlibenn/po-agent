@@ -157,7 +157,7 @@ export async function POST(request: NextRequest) {
       const afterGreeting = emailDraft.bodyText.split('\n\n').slice(1).join('\n\n')
       
       // Extract bullets section
-      const bulletsMatch = afterGreeting.match(/Please confirm the following:\n\n([•].+?)(\n\n|$)/s)
+      const bulletsMatch = afterGreeting.match(/Please confirm the following:\n\n([•][\s\S]+?)(\n\n|$)/)
       const bullets = bulletsMatch ? afterGreeting.match(/• .+/g) || [] : []
       
       if (bullets.length > 0) {
