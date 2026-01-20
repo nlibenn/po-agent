@@ -137,6 +137,26 @@ export function SupplierConfirmationDrawer({
   const [nextActionExpanded, setNextActionExpanded] = useState(false)
   const [expandedEmailIds, setExpandedEmailIds] = useState<Set<string>>(new Set())
   const [expandedDebugAttachmentIds, setExpandedDebugAttachmentIds] = useState<Set<string>>(new Set())
+  // Agent orchestrator state
+  const [agentResult, setAgentResult] = useState<{
+    caseId: string
+    policy_version: string
+    decision: {
+      action_type: 'NO_OP' | 'DRAFT_EMAIL' | 'SEND_EMAIL' | 'APPLY_UPDATES_READY' | 'NEEDS_HUMAN'
+      reason: string
+      missing_fields_remaining: string[]
+      risk_level: 'LOW' | 'MEDIUM' | 'HIGH'
+    }
+    drafted_email?: {
+      subject: string
+      body: string
+      to: string
+      threadId?: string
+    }
+    requires_user_approval: boolean
+  } | null>(null)
+  const [runningAgent, setRunningAgent] = useState(false)
+  const [agentError, setAgentError] = useState<string | null>(null)
   
   // Simple hover tooltip component
   const EmailTooltip = ({ email, children }: { email: SupplierChaseMessage; children: React.ReactNode }) => {
@@ -224,6 +244,9 @@ export function SupplierConfirmationDrawer({
       setNextActionExpanded(false)
       setExpandedEmailIds(new Set())
       setExpandedDebugAttachmentIds(new Set())
+      setAgentResult(null)
+      setRunningAgent(false)
+      setAgentError(null)
       retrievedThreadsRef.current.clear()
       extractedAttachmentIdsRef.current.clear()
       parsedFieldsRef.current.clear()
@@ -1449,6 +1472,139 @@ export function SupplierConfirmationDrawer({
     setTimeout(() => setApplyToast(null), 2500)
   }
 
+  // Agent orchestrator handlers
+  const handleRunAgent = async () => {
+    if (!caseId) return
+
+    setRunningAgent(true)
+    setAgentError(null)
+
+    try {
+      const response = await fetch('/api/agent/ack-orchestrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          caseId,
+          mode: 'queue_only',
+          lookbackDays: 30,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to run agent')
+      }
+
+      const result = await response.json()
+      setAgentResult(result)
+
+      // If agent drafted an email, populate the draft editor
+      if (result.drafted_email) {
+        setLocalDraft({
+          subject: result.drafted_email.subject,
+          body: result.drafted_email.body,
+        })
+        // Update followupDraft if we're in followup mode, otherwise set emailDraft
+        if (nextEmailMode === 'followup') {
+          setFollowupDraft({
+            subject: result.drafted_email.subject,
+            body: result.drafted_email.body,
+            missingFields: result.decision.missing_fields_remaining || [],
+            contextSnippet: null,
+          })
+        }
+        // Update threadId if present
+        if (result.drafted_email.threadId) {
+          setThreadId(result.drafted_email.threadId)
+        }
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to run agent'
+      setAgentError(errorMsg)
+      console.error('[AGENT_UI] error:', err)
+    } finally {
+      setRunningAgent(false)
+    }
+  }
+
+  const handleApproveAndSend = async () => {
+    if (!caseId || !agentResult?.drafted_email) return
+
+    setSending(true)
+    setError(null)
+
+    try {
+      // Use localDraft if edited, otherwise use agent's draft
+      const subjectToUse = localDraft?.subject?.trim() || agentResult.drafted_email.subject
+      const bodyToUse = localDraft?.body?.trim() || agentResult.drafted_email.body
+
+      const response = await fetch('/api/confirmations/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          caseId,
+          poNumber,
+          lineId,
+          supplierEmail,
+          supplierName,
+          missingFields: agentResult.decision.missing_fields_remaining || [],
+          subject: subjectToUse,
+          body: bodyToUse,
+          ...(agentResult.drafted_email.threadId ? { threadId: agentResult.drafted_email.threadId } : {}),
+          runInboxSearch: false, // Already done by agent
+          forceSend: true,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to send email')
+      }
+
+      const result = await response.json()
+
+      // Refresh case details after send
+      const detailsResponse = await fetch(`/api/confirmations/case/${caseId}`)
+      if (detailsResponse.ok) {
+        const details: CaseDetails = await detailsResponse.json()
+        setCaseDetails(details)
+        setEvents(details.events || [])
+        if (Array.isArray(details.case?.missing_fields)) {
+          setMissingFields(details.case.missing_fields)
+        }
+      }
+
+      // Clear agent result after successful send
+      setAgentResult(null)
+      setLocalDraft(null)
+
+      // Show success toast
+      setApplyToast('Email sent successfully')
+      setTimeout(() => setApplyToast(null), 3000)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to send email'
+      setError(errorMsg)
+      setApplyToast(`Failed to send: ${errorMsg}`)
+      setTimeout(() => setApplyToast(null), 4000)
+      console.error('[AGENT_UI] send error:', err)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleDiscardAgentAction = () => {
+    setAgentResult(null)
+    // Reset draft to original state if we had one
+    if (followupDraft) {
+      setLocalDraft({
+        subject: followupDraft.subject,
+        body: followupDraft.body,
+      })
+    } else {
+      setLocalDraft(null)
+    }
+  }
+
   const hasExtractedFields = extractedFields && (
     extractedFields.supplierReferenceNumber ||
     extractedFields.shipDate ||
@@ -1670,6 +1826,78 @@ export function SupplierConfirmationDrawer({
                 </div>
               </div>
 
+              {/* Agent section - minimal, always present */}
+              <div className="bg-surface-2 rounded-xl border border-border/70 p-2.5">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-text">Agent</h3>
+                  <div className="flex items-center gap-2">
+                    {agentResult && (
+                      <>
+                        <button
+                          onClick={handleDiscardAgentAction}
+                          className="px-2 py-1 text-xs font-medium text-text-subtle hover:text-text bg-surface border border-border/70 rounded transition-colors"
+                        >
+                          Discard
+                        </button>
+                        <button
+                          onClick={handleApproveAndSend}
+                          disabled={
+                            !agentResult.drafted_email ||
+                            agentResult.decision.action_type === 'NO_OP' ||
+                            agentResult.decision.action_type === 'NEEDS_HUMAN' ||
+                            sending
+                          }
+                          className="px-3 py-1 text-xs font-medium text-surface bg-primary-deep hover:bg-primary-deep/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
+                        >
+                          {sending ? 'Sending...' : 'Approve & Send'}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={handleRunAgent}
+                      disabled={!caseId || runningAgent}
+                      className="px-3 py-1 text-xs font-medium text-text bg-surface border border-border/70 hover:bg-surface-tint disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
+                    >
+                      {runningAgent ? 'Running...' : 'Run Agent'}
+                    </button>
+                  </div>
+                </div>
+                {agentError && (
+                  <div className="text-xs text-danger mb-2 bg-danger/15 border border-danger/30 rounded px-2 py-1">
+                    {agentError}
+                  </div>
+                )}
+                {agentResult && (
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-text-muted">Decision:</span>
+                      <span className={`font-medium ${
+                        agentResult.decision.action_type === 'NEEDS_HUMAN' ? 'text-danger' :
+                        agentResult.decision.action_type === 'NO_OP' ? 'text-text-subtle' :
+                        'text-text'
+                      }`}>
+                        {agentResult.decision.action_type.replace(/_/g, ' ')}
+                      </span>
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                        agentResult.decision.risk_level === 'HIGH' ? 'bg-danger/15 text-danger border border-danger/30' :
+                        agentResult.decision.risk_level === 'MEDIUM' ? 'bg-warning/15 text-warning border border-warning/30' :
+                        'bg-success/15 text-success border border-success/30'
+                      }`}>
+                        {agentResult.decision.risk_level}
+                      </span>
+                    </div>
+                    <div className="text-text-subtle line-clamp-2">
+                      {agentResult.decision.reason}
+                    </div>
+                    {agentResult.decision.action_type === 'APPLY_UPDATES_READY' && (
+                      <div className="text-xs text-text-muted bg-info/15 border border-info/30 rounded px-2 py-1">
+                        Ready to apply extracted fields
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Next action - collapsible, always present */}
               <div className="bg-surface-2 rounded-xl border border-border/70 p-2.5">
                 <button
@@ -1698,17 +1926,22 @@ export function SupplierConfirmationDrawer({
                       if (recentlySent) {
                         return <div className="text-sm text-text">Waiting for supplier response.</div>
                       }
-                      if (displayMissingFields.length > 0 && followupDraft) {
-                        // Show inline editable email draft
+                      // Show editable email draft if we have agent draft or followup draft
+                      const draftToShow = agentResult?.drafted_email || followupDraft
+                      if (displayMissingFields.length > 0 && draftToShow) {
+                        // Use agent draft if available, otherwise use followup draft
+                        const draftSubject = agentResult?.drafted_email?.subject || followupDraft?.subject || ''
+                        const draftBody = agentResult?.drafted_email?.body || followupDraft?.body || ''
+                        
                         return (
                           <div className="space-y-2">
                             <input
                               type="text"
                               data-followup-subject-input
-                              value={localDraft?.subject || followupDraft?.subject || ''}
+                              value={localDraft?.subject || draftSubject}
                               onChange={(e) => {
-                                if (!localDraft && followupDraft) {
-                                  setLocalDraft({ subject: followupDraft.subject, body: followupDraft.body })
+                                if (!localDraft) {
+                                  setLocalDraft({ subject: draftSubject, body: draftBody })
                                 }
                                 if (localDraft) {
                                   setLocalDraft({ ...localDraft, subject: e.target.value })
@@ -1719,10 +1952,10 @@ export function SupplierConfirmationDrawer({
                             />
                             <textarea
                               data-followup-editor-textarea
-                              value={localDraft?.body || followupDraft?.body || ''}
+                              value={localDraft?.body || draftBody}
                               onChange={(e) => {
-                                if (!localDraft && followupDraft) {
-                                  setLocalDraft({ subject: followupDraft.subject, body: followupDraft.body })
+                                if (!localDraft) {
+                                  setLocalDraft({ subject: draftSubject, body: draftBody })
                                 }
                                 if (localDraft) {
                                   setLocalDraft({ ...localDraft, body: e.target.value })
@@ -1731,14 +1964,27 @@ export function SupplierConfirmationDrawer({
                               rows={8}
                               className="w-full px-2 py-1.5 text-xs text-text bg-surface border border-border rounded focus:outline-none focus:ring-1 focus:ring-ring/70 font-mono whitespace-pre-wrap"
                             />
-                            <div className="flex justify-end">
+                            <div className="flex justify-end gap-2">
+                              {agentResult?.drafted_email && (
+                                <button
+                                  onClick={handleDiscardAgentAction}
+                                  className="px-3 py-1.5 rounded text-xs font-medium text-text-subtle hover:text-text bg-surface border border-border/70 hover:bg-surface-tint transition-colors"
+                                >
+                                  Discard
+                                </button>
+                              )}
                               <button
                                 onClick={async () => {
-                                  await handleSendFollowup()
+                                  // If agent draft exists, use approve & send; otherwise use regular send
+                                  if (agentResult?.drafted_email) {
+                                    await handleApproveAndSend()
+                                  } else {
+                                    await handleSendFollowup()
+                                  }
                                   // Auto-collapse after send
                                   setNextActionExpanded(false)
                                 }}
-                                disabled={!followupDraft || (!localDraft && !followupDraft?.body) || sending}
+                                disabled={!draftToShow || (!localDraft && !draftBody) || sending}
                                 className="px-3 py-1.5 rounded text-xs font-medium text-surface bg-primary-deep hover:bg-primary-deep/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                               >
                                 {sending ? 'Sending...' : 'Send'}
