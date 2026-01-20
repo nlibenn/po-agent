@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { searchInboxForConfirmation } from '@/src/lib/supplier-agent/inboxSearch'
+import { searchInboxForConfirmation, type SearchResult } from '@/src/lib/supplier-agent/inboxSearch'
 import { sendNewEmail, sendReplyInThread } from '@/src/lib/supplier-agent/outreach'
 import { generateConfirmationEmail } from '@/src/lib/supplier-agent/emailDraft'
 import { getCase, updateCase, addEvent, addMessage } from '@/src/lib/supplier-agent/store'
@@ -208,7 +208,7 @@ export async function POST(request: NextRequest) {
             
             // Filter to inbound supplier messages (from != buyer)
             const inboundSupplierMessages = searchResult.topCandidates
-              .filter(candidate => {
+              .filter((candidate: SearchResult['topCandidates'][0]) => {
                 const fromEmail = (candidate.from || '').toLowerCase()
                 // Message is from supplier if from doesn't include buyer email
                 return !buyerEmail || !fromEmail.includes(buyerEmail)
