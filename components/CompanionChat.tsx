@@ -371,7 +371,7 @@ export function CompanionChat() {
             
             {/* Context badges */}
             <div className="flex flex-wrap gap-1.5 mt-2">
-              <Badge variant={scope.type === 'case' ? 'default' : 'secondary'} className="text-xs px-1.5 py-0.5 h-5">
+              <Badge variant={scope.type === 'case' ? 'default' : 'outline'} className="text-xs px-1.5 py-0.5 h-5">
                 {scope.type === 'case' ? `Case` : 'Global'}
               </Badge>
               {contextInfo?.filename && (
