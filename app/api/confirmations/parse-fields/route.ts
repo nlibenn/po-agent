@@ -56,7 +56,6 @@ export async function POST(request: NextRequest) {
     const attachmentIdsWithText = attachments.filter(a => a.text_extract && a.text_extract.trim().length > 0).map(a => a.attachment_id)
     
     // 2) Load email text (FALLBACK: most recent INBOUND message with body_text, only if no PDF text available)
-    type MsgRow = { subject?: string | null; body_text?: string | null }
     let msgRow: {
       message_id: string
       subject: string | null
@@ -67,7 +66,8 @@ export async function POST(request: NextRequest) {
     
     // Only use email text if no PDF text is available
     if (attachmentIdsWithText.length === 0) {
-      msgRow = (db
+      type EmailMsgRow = { message_id: string; subject: string | null; body_text: string | null; received_at: number | null; created_at: number; };
+      const row = db
         .prepare(
           `
           SELECT message_id, subject, body_text, received_at, created_at
@@ -78,7 +78,8 @@ export async function POST(request: NextRequest) {
           LIMIT 1
         `
         )
-        .get(caseId) as MsgRow | null) ?? undefined
+        .get(caseId) as EmailMsgRow | undefined;
+      msgRow = row;
     }
 
     const emailText = msgRow ? [msgRow.subject, msgRow.body_text].filter(Boolean).join('\n\n').trim() : ''
