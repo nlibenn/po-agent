@@ -213,7 +213,7 @@ export async function POST(request: NextRequest) {
                 // Message is from supplier if from doesn't include buyer email
                 return !buyerEmail || !fromEmail.includes(buyerEmail)
               })
-              .sort((a, b) => (b.date || 0) - (a.date || 0)) // Most recent first
+              .sort((a: SearchResult['topCandidates'][0], b: SearchResult['topCandidates'][0]) => (b.date || 0) - (a.date || 0)) // Most recent first
             
             if (inboundSupplierMessages.length > 0) {
               const anchor = inboundSupplierMessages[0]
