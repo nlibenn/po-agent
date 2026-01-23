@@ -8,7 +8,7 @@ import { Home, FolderOpen, Package, AlertCircle, FileCheck, CheckSquare } from '
 
 const navItems = [
   { href: '/home', label: 'Home', priority: 'highest', dataDependent: false, icon: Home },
-  { href: '/acknowledgements', label: 'Acks', priority: 'primary', dataDependent: true, icon: CheckSquare },
+  { href: '/acknowledgements', label: 'Acknowledgements', priority: 'primary', dataDependent: true, icon: CheckSquare },
   { href: '/drive', label: 'Drive', priority: 'highest', dataDependent: false, icon: FolderOpen },
   // Hide these for now per scope - focus on acknowledgements only
   // { href: '/releases', label: 'Releases', priority: 'highest', dataDependent: true, icon: Package },
@@ -105,7 +105,12 @@ export function BuyerWorkbenchNav() {
   }
 
   return (
-    <nav className={`flex flex-col h-full transition-all ${shouldCollapse ? 'w-16' : 'w-64'}`}>
+    // Ensure sidebar stays clickable above any workbench overlays (e.g. /acknowledgements panels)
+    <nav
+      className={`relative z-50 pointer-events-auto flex flex-col h-full transition-all ${
+        shouldCollapse ? 'w-16' : 'w-64'
+      }`}
+    >
       <div className={`${shouldCollapse ? 'px-3 py-4' : 'px-6 py-6'} transition-all`}>
         {!shouldCollapse && (
           <h1 className="text-base font-semibold text-text">Buyer Workbench</h1>
@@ -137,6 +142,7 @@ export function BuyerWorkbenchNav() {
                 href={item.href}
                 className={`flex items-center ${shouldCollapse ? 'justify-center px-3' : 'px-4'} py-2.5 rounded-full text-sm transition-all ${classes}`}
                 title={shouldCollapse ? item.label : undefined}
+                aria-label={shouldCollapse ? item.label : undefined}
               >
                 {renderIcon(item)}
                 {!shouldCollapse && <span>{item.label}</span>}

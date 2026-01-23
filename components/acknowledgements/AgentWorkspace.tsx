@@ -1,10 +1,9 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, Loader2, Bot, User, AlertCircle, Sparkles, Play, Mail, CheckSquare } from 'lucide-react'
+import { Send, Loader2, Bot, User, AlertCircle, Sparkles } from 'lucide-react'
 import { useAckChat, AckMessage } from './AcknowledgementChatProvider'
 import { useAgentState } from './AgentStateContext'
-import { CaseState, CaseStatus } from '@/src/lib/supplier-agent/types'
 
 interface AgentResult {
   caseId: string
@@ -101,18 +100,6 @@ export function AgentWorkspace({
   const [customEmailInput, setCustomEmailInput] = useState('')
   const [showCustomEmailInput, setShowCustomEmailInput] = useState(false)
   const [isSavingEmail, setIsSavingEmail] = useState(false)
-  const [caseState, setCaseState] = useState<{
-    case_id: string
-    po_number: string
-    line_id: string
-    supplier_name: string | null
-    state: string
-    status?: string
-    next_check_at: number | null
-    updated_at: number
-    meta: any
-    missing_fields?: string[]
-  } | null>(null)
 
   // Sync caseId with chat provider
   // FIXED: Don't run any side effects when caseId is null
@@ -125,70 +112,10 @@ export function AgentWorkspace({
     setCaseId(caseId)
     // Clear last agent result when case changes
     lastAgentResultRef.current = null
-    setCaseState(null)
     // Reset task when case changes
     agentState.setCurrentTask(poNumber || '', lineId || '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseId, setCaseId, poNumber, lineId])
-
-  // Poll case state - FIXED: Use refs to prevent overlapping intervals
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const isPollingRef = useRef(false)
-  const lastFetchTimeRef = useRef(0)
-
-  useEffect(() => {
-    // Don't poll when no case selected - stop any existing polling and return immediately
-    if (!caseId) {
-      // Clean up any existing polling
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
-      }
-      isPollingRef.current = false
-      // Don't call setCaseState(null) here - avoid state updates when no case
-      return
-    }
-
-    // Prevent multiple intervals
-    if (isPollingRef.current) {
-      return
-    }
-
-    const pollCase = async () => {
-      // Request deduplication: skip if fetched within last second
-      const now = Date.now()
-      if (now - lastFetchTimeRef.current < 1000) {
-        return
-      }
-      lastFetchTimeRef.current = now
-
-      try {
-        const response = await fetch(`/api/cases/${encodeURIComponent(caseId)}`)
-        if (response.ok) {
-          const data = await response.json()
-          setCaseState(data)
-        }
-      } catch (error) {
-        console.error('Error polling case state:', error)
-      }
-    }
-
-    // Initial poll
-    pollCase()
-
-    // Start polling with appropriate interval
-    isPollingRef.current = true
-    const interval = isLoading ? 2000 : 10000
-    pollIntervalRef.current = setInterval(pollCase, interval)
-
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
-      }
-      isPollingRef.current = false
-    }
-  }, [caseId, isLoading])
 
   // Auto-scroll to bottom - only when case is selected
   useEffect(() => {
@@ -205,11 +132,6 @@ export function AgentWorkspace({
 
   // Conversation history for chat mode (state instead of ref for proper reactivity)
   const [conversationHistory, setConversationHistory] = useState<Array<{ role: string; content: string }>>([])
-  
-  // Context-aware prompt suggestions
-  const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([])
-  const [inputHasFocus, setInputHasFocus] = useState(false)
-  const [suggestionClicked, setSuggestionClicked] = useState(false)
   
   // Track previous caseId to detect changes (using separate ref for this purpose)
   const prevCaseIdForHistoryRef = useRef<string | null>(null)
@@ -594,15 +516,6 @@ export function AgentWorkspace({
         role: 'assistant', 
         content: assistantResponse
       }])
-      
-      // Reset suggestion clicked flag when agent responds
-      setSuggestionClicked(false)
-      
-      // Update suggestions after assistant responds
-      setTimeout(() => {
-        const newPrompts = getSuggestedPrompts()
-        setSuggestedPrompts(newPrompts)
-      }, 100)
 
       // If tools were used, update task steps and agent result
       if (result.tool_calls && result.tool_calls.length > 0) {
@@ -770,81 +683,6 @@ export function AgentWorkspace({
     }
   }
 
-  // Determine which action chips to show
-  // Quick action chips - always show these shortcuts
-  const showApplyChip = !!(
-    lastAgentResultRef.current?.decision?.action_type === 'APPLY_UPDATES_READY' ||
-    (lastAgentResultRef.current?.extracted_fields_best && (
-      lastAgentResultRef.current.extracted_fields_best.supplier_order_number?.value ||
-      lastAgentResultRef.current.extracted_fields_best.confirmed_delivery_date?.value ||
-      lastAgentResultRef.current.extracted_fields_best.confirmed_quantity?.value !== null
-    ))
-  )
-
-  // Generate context-aware prompt suggestions
-  const getSuggestedPrompts = useCallback((): string[] => {
-    if (!caseId) {
-      return []
-    }
-
-    // Determine case state
-    const caseStateValue = caseState?.state
-    const missingFields = caseState?.missing_fields || []
-    const isResolved = caseStateValue === CaseState.RESOLVED
-    const isConfirmed = isResolved || (missingFields.length === 0 && caseStateValue !== CaseState.INBOX_LOOKUP)
-    const isOutreachSent = caseStateValue === CaseState.OUTREACH_SENT || 
-                          caseStateValue === CaseState.FOLLOWUP_SENT
-    
-    if (isConfirmed || isResolved) {
-      // Case is complete - show view/export options instead
-      return ['View confirmation details', 'Export confirmation data']
-    }
-
-    const lastMessage = messages[messages.length - 1]
-    const agentLastSaid = lastMessage?.role === 'assistant' ? lastMessage.content : ''
-    
-    // Just selected PO, no conversation yet
-    if (messages.length === 0 || (messages.length === 1 && messages[0].role === 'system')) {
-      if (isOutreachSent) {
-        return ['Check for supplier reply', 'Send follow-up email']
-      }
-      return ['Check if we have confirmation', 'What information is missing?']
-    }
-    
-    // Agent asked if you want to draft
-    if (agentLastSaid.includes('Would you like me to draft') || agentLastSaid.includes('want me to draft')) {
-      return ['Yes, please draft it', 'Not right now']
-    }
-    
-    // Agent drafted an email
-    if (agentLastSaid.includes('Subject:') || agentLastSaid.includes("I've drafted") || lastAgentResultRef.current?.drafted_email) {
-      return ['Send it', 'Change the subject', 'Start over']
-    }
-    
-    // Agent found partial data (has ✗ indicators)
-    if (agentLastSaid.includes('✗')) {
-      return ['Draft email for missing fields', 'Mark as complete anyway']
-    }
-    
-    // Default fallback
-    if (isOutreachSent) {
-      return ['Check for supplier reply', 'Send follow-up email']
-    }
-    return ['Check confirmation status', 'Draft an email']
-  }, [caseId, messages, caseState])
-
-  // Update suggestions when conversation changes
-  useEffect(() => {
-    if (!isLoading && !suggestionClicked) {
-      const newPrompts = getSuggestedPrompts()
-      setSuggestedPrompts(newPrompts)
-      // Reset suggestion clicked flag when agent responds
-      if (messages.length > 0 && messages[messages.length - 1]?.role === 'assistant') {
-        setSuggestionClicked(false)
-      }
-    }
-  }, [messages.length, isLoading, getSuggestedPrompts, suggestionClicked])
-
   // Circuit breaker - TEMPORARILY DISABLED for testing
   // renderCount.current++
   // if (renderCount.current > 50) {
@@ -905,9 +743,6 @@ export function AgentWorkspace({
             <div className="text-center">
               <p className="text-sm text-text-muted mb-3">
                 Ask me anything about this PO
-              </p>
-              <p className="text-xs text-text-subtle">
-                Try: "Check for supplier responses" or "What's the delivery date?"
               </p>
             </div>
           </div>
@@ -976,103 +811,8 @@ export function AgentWorkspace({
         )}
       </div>
 
-      {/* Action chips + Input */}
+      {/* Input */}
       <div className="flex-shrink-0 border-t border-border/50 bg-surface">
-        {/* Quick action chips */}
-        {caseId && (() => {
-          // Determine which buttons to show based on case state
-          const caseStateValue = caseState?.state
-          const missingFields = caseState?.missing_fields || []
-          const isResolved = caseStateValue === CaseState.RESOLVED
-          const isConfirmed = isResolved || (missingFields.length === 0 && caseStateValue !== CaseState.INBOX_LOOKUP)
-          const isOutreachSent = caseStateValue === CaseState.OUTREACH_SENT || 
-                                caseStateValue === CaseState.FOLLOWUP_SENT
-          const needsOutreach = caseStateValue === CaseState.INBOX_LOOKUP || 
-                               caseStateValue === CaseState.WAITING ||
-                               caseStateValue === CaseState.PARSED
-          
-          // Hide action buttons if case is confirmed/resolved
-          if (isConfirmed || isResolved) {
-            return null // Don't show action buttons for completed cases
-          }
-          
-          // Show different buttons based on state
-          const showCheckConfirmation = !isOutreachSent && needsOutreach
-          const showDraftEmail = needsOutreach
-          const showCheckReply = isOutreachSent
-          const showFollowUp = isOutreachSent
-          
-          return (
-            <div className="px-6 pt-3 pb-2 flex gap-2 flex-wrap">
-              {showCheckConfirmation && (
-                <button
-                  onClick={() => handleUserInput('Check if we have confirmation for this PO')}
-                  disabled={isLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-2 text-text hover:bg-surface-2/80 border border-border/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <Play className="w-3 h-3" />
-                  Check confirmation
-                </button>
-              )}
-              {showDraftEmail && (
-                <button
-                  onClick={() => handleUserInput('Draft an email requesting missing information')}
-                  disabled={isLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-2 text-text hover:bg-surface-2/80 border border-border/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <Mail className="w-3 h-3" />
-                  Draft email
-                </button>
-              )}
-              {showCheckReply && (
-                <button
-                  onClick={() => handleUserInput('Check for supplier reply')}
-                  disabled={isLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-2 text-text hover:bg-surface-2/80 border border-border/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <Play className="w-3 h-3" />
-                  Check for reply
-                </button>
-              )}
-              {showFollowUp && (
-                <button
-                  onClick={() => handleUserInput('Send follow-up email')}
-                  disabled={isLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-2 text-text hover:bg-surface-2/80 border border-border/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <Mail className="w-3 h-3" />
-                  Send follow-up
-                </button>
-              )}
-              {showApplyChip && (
-                <button
-                  onClick={() => handleUserInput('Please apply the extracted fields to the confirmation record')}
-                  disabled={isLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-success/10 text-success hover:bg-success/20 border border-success/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <CheckSquare className="w-3 h-3" />
-                  Apply updates
-                </button>
-              )}
-            </div>
-          )
-        })()}
-
-        {/* Context-aware prompt suggestions */}
-        {suggestedPrompts.length > 0 && !isLoading && (
-          <div className="px-6 pt-2 pb-2 flex gap-2 flex-wrap">
-            {suggestedPrompts.map((prompt, index) => (
-              <button
-                key={index}
-                onClick={() => handleUserInput(prompt)}
-                className="px-3 py-1 text-xs font-medium rounded-full bg-surface-2 text-text hover:bg-surface-2/80 border border-border/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {prompt}
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* Text input */}
         <div className="px-6 pb-4 flex gap-3">
           <textarea
@@ -1080,8 +820,6 @@ export function AgentWorkspace({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            onFocus={() => setInputHasFocus(true)}
-            onBlur={() => setInputHasFocus(false)}
             placeholder="Ask a question or give an instruction..."
             className="flex-1 px-4 py-2.5 text-sm border border-border/70 rounded-xl bg-white resize-none focus:outline-none focus:ring-2 focus:ring-primary-deep/20 focus:border-primary-deep/50 placeholder:text-text-subtle"
             rows={1}
@@ -1099,27 +837,6 @@ export function AgentWorkspace({
             )}
           </button>
         </div>
-
-        {/* Context-aware prompt suggestions - below input */}
-        {suggestedPrompts.length > 0 && !isLoading && !inputHasFocus && !suggestionClicked && (
-          <div className="px-6 pb-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-text-subtle">Suggested:</span>
-              {suggestedPrompts.map((prompt, index) => (
-                <button
-                  key={index}
-                  onClick={() => {
-                    setSuggestionClicked(true)
-                    handleUserInput(prompt)
-                  }}
-                  className="px-2.5 py-1 text-xs text-text-muted rounded-full bg-gray-100 hover:bg-gray-200 border border-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )
