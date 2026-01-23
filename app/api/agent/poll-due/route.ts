@@ -879,8 +879,8 @@ export async function POST(request: NextRequest) {
             const first = attachmentHashRows.find(r => r.sha) || attachmentHashRows[0]
             if (first?.sha) {
               evidenceRef = {
-                message_id: first.message_id || evidenceRef?.message_id || messageIds[0],
-                thread_id: threadId || evidenceRef?.thread_id || null,
+                message_id: ((first as any)?.message_id || evidenceRef?.message_id || messageIds[0]) as string,
+                thread_id: (threadId || (evidenceRef as any)?.thread_id || null) as string | null,
                 attachment_id: first.attachment_id || undefined,
                 content_sha256: first.sha,
                 source_type: 'pdf' as const,
