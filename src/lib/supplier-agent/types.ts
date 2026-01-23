@@ -10,6 +10,7 @@ export enum CaseState {
   FOLLOWUP_SENT = 'FOLLOWUP_SENT',
   RESOLVED = 'RESOLVED',
   ESCALATED = 'ESCALATED',
+  ERROR = 'ERROR',
 }
 
 export enum CaseStatus {
@@ -28,6 +29,7 @@ export type EventType =
   | 'INBOX_SEARCH_NOT_FOUND'
   | 'EMAIL_DRAFTED'
   | 'EMAIL_SENT'
+  | 'OUTREACH_SEND_FAILED'
   | 'REPLY_RECEIVED'
   | 'ATTACHMENT_INGESTED'
   | 'PDF_TEXT_EXTRACTED'
@@ -62,6 +64,8 @@ export interface SupplierChaseCase {
   last_action_at: number // epoch ms
   created_at: number // epoch ms
   updated_at: number // epoch ms
+  next_check_at: number | null // epoch ms, NULL means no scheduled check
+  last_inbox_check_at: number | null // epoch ms, observability only
   meta: Record<string, any> // JSON blob
 }
 

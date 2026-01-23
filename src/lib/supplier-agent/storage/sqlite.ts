@@ -6,7 +6,7 @@
  * 
  * Initialization flow:
  * 1. First call to getDb() triggers initDb()
- * 2. initDb() opens the database connection at data/chase-agent.db
+ * 2. initDb() opens the database connection at ./data/chase-agent.db
  * 3. Executes schema.sql which creates all tables:
  *    - Supplier-agent tables: cases, events, messages, attachments
  *    - Gmail OAuth table: gmail_tokens
@@ -20,7 +20,11 @@ import Database from 'better-sqlite3'
 import { readFileSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 
-const DB_PATH = join(process.cwd(), 'data', 'chase-agent.db')
+const DATA_DIR = './data'
+const DB_PATH = join(DATA_DIR, 'chase-agent.db')
+
+// Export DB_PATH for dev tools and diagnostics
+export const getDbPath = (): string => DB_PATH
 
 let db: Database.Database | null = null
 let isInitialized = false
@@ -42,7 +46,7 @@ export function initDb(): Database.Database {
 
   // Ensure data directory exists
   try {
-    mkdirSync(dirname(DB_PATH), { recursive: true })
+    mkdirSync(DATA_DIR, { recursive: true })
   } catch (error: any) {
     // Directory might already exist, ignore
     if (error.code !== 'EEXIST') {
@@ -143,6 +147,39 @@ export function initDb(): Database.Database {
       // Reset cache even on error
       columnCache = null
     }
+  }
+
+  // Migrate cases table to add next_check_at and last_inbox_check_at
+  try {
+    const casesTableExists = db.prepare(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' AND name='cases'
+    `).get() as { name: string } | undefined
+    
+    if (casesTableExists) {
+      const columnCheck = db.prepare("PRAGMA table_info(cases)").all() as Array<{ name: string }>
+      const columnNames = columnCheck.map(col => col.name)
+      
+      if (!columnNames.includes('next_check_at')) {
+        db.exec('ALTER TABLE cases ADD COLUMN next_check_at INTEGER')
+        addedColumns.push('next_check_at')
+      }
+      
+      if (!columnNames.includes('last_inbox_check_at')) {
+        db.exec('ALTER TABLE cases ADD COLUMN last_inbox_check_at INTEGER')
+        addedColumns.push('last_inbox_check_at')
+      }
+      
+      // Reset column cache after migration
+      columnCache = null
+    }
+  } catch (error: any) {
+    // Ignore migration errors (column might already exist)
+    if (!error.message.includes('duplicate column') && !error.message.includes('no such table')) {
+      console.warn('Warning: Could not migrate cases table:', error.message)
+    }
+    // Reset cache even on error
+    columnCache = null
   }
 
   // Create all tables if they don't exist

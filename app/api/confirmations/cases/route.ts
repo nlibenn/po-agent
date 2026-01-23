@@ -38,6 +38,33 @@ export async function POST(request: NextRequest) {
     const caseId = `${Date.now()}-${Math.random().toString(36).substring(7)}`
     const now = Date.now()
     
+    // Normalize ordered quantity from various possible field names
+    const rawQty = body.orderQty ?? body.orderedQty ?? body.qty ?? body.quantity ?? 
+                   body.quantityOrdered ?? body.poLineQty ?? body.order_qty ?? body.ordered_quantity
+    let orderedQuantity: number | null = null
+    
+    if (rawQty !== undefined && rawQty !== null) {
+      const parsed = typeof rawQty === 'number' ? rawQty : parseFloat(String(rawQty))
+      if (Number.isFinite(parsed) && parsed > 0) {
+        orderedQuantity = parsed
+      }
+    }
+    
+    // Build meta with po_line structure for parse-fields validation
+    const meta: Record<string, any> = {
+      po_line: {
+        po_number: body.po_number,
+        line_id: body.line_id,
+        ordered_quantity: orderedQuantity,
+        uom: body.uom ?? null,
+      },
+    }
+    
+    // Log warning if ordered_quantity is missing
+    if (orderedQuantity === null) {
+      console.warn('[CASE_CREATE] missing ordered_quantity for case', caseId)
+    }
+    
     // Create case
     createCase({
       case_id: caseId,
@@ -53,7 +80,7 @@ export async function POST(request: NextRequest) {
       last_action_at: now,
       created_at: now,
       updated_at: now,
-      meta: {},
+      meta,
     })
     
     return NextResponse.json({

@@ -102,6 +102,8 @@ export function getCase(case_id: string): SupplierChaseCase | null {
     last_action_at: row.last_action_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    next_check_at: row.next_check_at ?? null,
+    last_inbox_check_at: row.last_inbox_check_at ?? null,
     meta: JSON.parse(row.meta || '{}'),
   }
 }
@@ -132,6 +134,8 @@ export function findCaseByPoLine(po_number: string, line_id: string): SupplierCh
     last_action_at: row.last_action_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    next_check_at: row.next_check_at ?? null,
+    last_inbox_check_at: row.last_inbox_check_at ?? null,
     meta: JSON.parse(row.meta || '{}'),
   }
 }
@@ -189,6 +193,14 @@ export function updateCase(case_id: string, patch: SupplierChaseCaseUpdate): voi
   if (patch.updated_at !== undefined) {
     updates.push('updated_at = ?')
     values.push(patch.updated_at)
+  }
+  if (patch.next_check_at !== undefined) {
+    updates.push('next_check_at = ?')
+    values.push(patch.next_check_at)
+  }
+  if (patch.last_inbox_check_at !== undefined) {
+    updates.push('last_inbox_check_at = ?')
+    values.push(patch.last_inbox_check_at)
   }
   if (patch.meta !== undefined) {
     updates.push('meta = ?')
@@ -591,6 +603,53 @@ export function listAttachmentsForCase(case_id: string): SupplierChaseAttachment
 }
 
 /**
+ * Get attachments for a case with thread_id and received_at included.
+ * This is the recommended way to fetch attachments by caseId since it includes
+ * message context needed for proper evidence linkage.
+ * 
+ * @param case_id - Case ID to fetch attachments for
+ * @returns Array of attachments with thread_id and received_at from messages
+ */
+export function getAttachmentsForCase(case_id: string): Array<SupplierChaseAttachment & { thread_id: string | null; received_at: number | null }> {
+  const db = getDb()
+  const stmt = db.prepare(`
+    SELECT 
+      a.attachment_id,
+      a.message_id,
+      a.filename,
+      a.mime_type,
+      a.gmail_attachment_id,
+      a.binary_data_base64,
+      a.text_extract,
+      a.parsed_fields_json,
+      a.parse_confidence_json,
+      a.created_at,
+      m.thread_id,
+      m.received_at
+    FROM attachments a
+    INNER JOIN messages m ON a.message_id = m.message_id
+    WHERE m.case_id = ?
+    ORDER BY COALESCE(m.received_at, a.created_at) DESC, a.created_at DESC
+  `)
+  const rows = stmt.all(case_id) as any[]
+  
+  return rows.map((row) => ({
+    attachment_id: row.attachment_id,
+    message_id: row.message_id,
+    filename: row.filename,
+    mime_type: row.mime_type,
+    gmail_attachment_id: row.gmail_attachment_id,
+    binary_data_base64: row.binary_data_base64 || null,
+    text_extract: row.text_extract,
+    parsed_fields_json: row.parsed_fields_json ? JSON.parse(row.parsed_fields_json) : null,
+    parse_confidence_json: row.parse_confidence_json ? JSON.parse(row.parse_confidence_json) : null,
+    created_at: row.created_at,
+    thread_id: row.thread_id || null,
+    received_at: row.received_at || null,
+  }))
+}
+
+/**
  * Update all references from oldAttachmentId to newAttachmentId.
  * Updates references in cases.meta, confirmation_records, confirmation_extractions, and events.
  * 
@@ -796,4 +855,52 @@ export function cleanupDuplicatePdfAttachments(): { groups: number; removed: num
   
   console.log(`[ATTACH_DEDUPE] cleanup {groups: ${duplicateGroups.length}, removed: ${totalRemoved}}`)
   return { groups: duplicateGroups.length, removed: totalRemoved }
+}
+
+/**
+ * Execute a function with an exclusive lock on a case to prevent concurrent modifications.
+ * 
+ * Uses SQLite transaction locking (BEGIN IMMEDIATE) to ensure only one operation
+ * can modify a case at a time. If the lock is busy, the function returns null
+ * (caller should skip this case and move on).
+ * 
+ * @param caseId The case ID to lock
+ * @param fn The function to execute while holding the lock
+ * @returns The result of fn, or null if lock acquisition failed
+ */
+export function withCaseLock<T>(caseId: string, fn: (caseData: SupplierChaseCase) => T): T | null {
+  const db = getDb()
+  
+  try {
+    // Begin immediate transaction (exclusive lock)
+    db.exec('BEGIN IMMEDIATE')
+    
+    try {
+      // Re-read case while holding lock
+      const caseData = getCase(caseId)
+      if (!caseData) {
+        db.exec('ROLLBACK')
+        return null
+      }
+      
+      // Execute function
+      const result = fn(caseData)
+      
+      // Commit transaction (releases lock)
+      db.exec('COMMIT')
+      return result
+    } catch (error) {
+      // Rollback on any error
+      db.exec('ROLLBACK')
+      throw error
+    }
+  } catch (error: any) {
+    // If lock acquisition failed (SQLITE_BUSY), return null
+    if (error.code === 'SQLITE_BUSY' || error.message?.includes('locked')) {
+      console.log(`[CASE_LOCK] Case ${caseId} is locked, skipping`)
+      return null
+    }
+    // Re-throw other errors
+    throw error
+  }
 }

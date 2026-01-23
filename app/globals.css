@@ -110,3 +110,8 @@
     transform: none !important;
   }
 }
+
+/* Hide floating companion chat on acknowledgements workbench (chat is built into center panel) */
+body[data-ack-workbench="true"] .companion-widget {
+  display: none;
+}

@@ -4,6 +4,7 @@ import { sendNewEmail, sendReplyInThread } from '@/src/lib/supplier-agent/outrea
 import { generateConfirmationEmail } from '@/src/lib/supplier-agent/emailDraft'
 import { getCase, updateCase, addEvent, addMessage } from '@/src/lib/supplier-agent/store'
 import { CaseState, CaseStatus } from '@/src/lib/supplier-agent/types'
+import { transitionCase, TransitionEvent } from '@/src/lib/supplier-agent/stateMachine'
 
 export const runtime = 'nodejs'
 
@@ -46,8 +47,14 @@ const DEMO_SUPPLIER_EMAIL = 'supplierbart@gmail.com'
 export async function POST(request: NextRequest) {
   console.log('[SEND_ROUTE] hit')
   
+  let caseId: string | undefined = undefined
+  
   try {
     const body = await request.json()
+    caseId = body.caseId
+    
+    // [SEND] start - minimal debug log
+    console.log('[SEND] start', { caseId })
     
     console.log('[SEND_ROUTE] parsed body', {
       caseId: body.caseId || null,
@@ -65,7 +72,8 @@ export async function POST(request: NextRequest) {
     // Support two payload shapes:
     // 1. Full payload: { caseId, poNumber, lineId, supplierEmail, missingFields, ... }
     // 2. Minimal with caseId: { caseId, subject, body, ... } - will look up case
-    let caseId = body.caseId
+    // Note: caseId already declared above, just reassign here
+    caseId = body.caseId
     let poNumber = body.poNumber
     let lineId = body.lineId
     let supplierEmail = body.supplierEmail
@@ -124,6 +132,16 @@ export async function POST(request: NextRequest) {
         { status: 404 }
       )
     }
+
+    // [SEND] Log A: Start of handler with case details
+    console.info('[SEND] handler start', {
+      caseId,
+      currentState: caseData.state,
+      forceSend: forceSend || false,
+      poNumber,
+      lineId,
+      supplierEmail,
+    })
     
     console.log('[SEND_ROUTE] resolved case details', {
       poNumber,
@@ -245,22 +263,31 @@ export async function POST(request: NextRequest) {
           subject: sentSubject,
         })
         
+        // Demo mode handling:
+        // - If DEMO_MODE === 'true': redirect TO to supplierbart@gmail.com
+        // - Always add BCC to supplierbart@gmail.com for safety
+        const isDemoMode = process.env.DEMO_MODE === 'true'
+        const actualTo = isDemoMode ? DEMO_SUPPLIER_EMAIL : supplierEmail
+        const bcc = DEMO_SUPPLIER_EMAIL // Always BCC for safety
+        
         console.log('[SEND_ROUTE] sending followup reply', {
           threadId,
           replyToMessageId,
-          to: supplierEmail,
+          displayTo: supplierEmail,
+          actualTo,
+          bcc,
+          demoMode: isDemoMode,
           subject: sentSubject,
         })
         
-        // DEMO OVERRIDE — do not use in production
-        console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
         const replyResult = await sendReplyInThread({
           threadId: threadId!,
-          to: DEMO_SUPPLIER_EMAIL,
+          to: actualTo,
           subject: sentSubject,
           bodyText: sentBodyText,
           replyToMessageId,
           originalSubject,
+          bcc,
         })
         
         console.log('[SEND_ROUTE] gmail response', {
@@ -268,22 +295,43 @@ export async function POST(request: NextRequest) {
           threadId: replyResult.threadId,
         })
         
+        // [SEND] Log B: After Gmail send returns (followup reply)
+        console.info('[SEND] gmail send returned', {
+          caseId,
+          gmailMessageId: replyResult.gmailMessageId,
+          threadId: replyResult.threadId,
+          action: 'REPLY_IN_THREAD',
+        })
+        
         gmailMessageId = replyResult.gmailMessageId
         threadId = replyResult.threadId
+        
+        // [SEND] gmail result - minimal debug log
+        console.log('[SEND] gmail result', { gmailMessageId, threadId })
       } else {
         // No threadId found, send as new email
         action = 'SEND_NEW'
+        
+        // Demo mode handling:
+        // - If DEMO_MODE === 'true': redirect TO to supplierbart@gmail.com
+        // - Always add BCC to supplierbart@gmail.com for safety
+        const isDemoMode = process.env.DEMO_MODE === 'true'
+        const actualTo = isDemoMode ? DEMO_SUPPLIER_EMAIL : supplierEmail
+        const bcc = DEMO_SUPPLIER_EMAIL // Always BCC for safety
+        
         console.log('[SEND_ROUTE] sending followup as new email (no threadId)', {
-          to: supplierEmail,
+          displayTo: supplierEmail,
+          actualTo,
+          bcc,
+          demoMode: isDemoMode,
           subject: sentSubject,
         })
         
-        // DEMO OVERRIDE — do not use in production
-        console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
         const sendResult = await sendNewEmail({
-          to: DEMO_SUPPLIER_EMAIL,
+          to: actualTo,
           subject: sentSubject,
           bodyText: sentBodyText,
+          bcc,
         })
         
         console.log('[SEND_ROUTE] gmail response', {
@@ -291,8 +339,19 @@ export async function POST(request: NextRequest) {
           threadId: sendResult.threadId,
         })
         
+        // [SEND] Log B: After Gmail send returns (followup new)
+        console.info('[SEND] gmail send returned', {
+          caseId,
+          gmailMessageId: sendResult.gmailMessageId,
+          threadId: sendResult.threadId,
+          action: 'SEND_NEW',
+        })
+        
         gmailMessageId = sendResult.gmailMessageId
         threadId = sendResult.threadId
+        
+        // [SEND] gmail result - minimal debug log
+        console.log('[SEND] gmail result', { gmailMessageId, threadId })
       }
     } else if (runInboxSearch && !isForced) {
       // Run inbox search if requested and not forced
@@ -362,14 +421,25 @@ export async function POST(request: NextRequest) {
             sentBodyText = replyEmail.bodyText
           }
           
-          // DEMO OVERRIDE — do not use in production
-          console.log('[SEND_ROUTE] about to call gmail (reply in thread)')
-          console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
+          // Demo mode handling:
+          // - If DEMO_MODE === 'true': redirect TO to supplierbart@gmail.com
+          // - Always add BCC to supplierbart@gmail.com for safety
+          const isDemoMode = process.env.DEMO_MODE === 'true'
+          const actualTo = isDemoMode ? DEMO_SUPPLIER_EMAIL : supplierEmail
+          const bcc = DEMO_SUPPLIER_EMAIL // Always BCC for safety
+          
+          console.log('[SEND_ROUTE] about to call gmail (reply in thread)', {
+            displayTo: supplierEmail,
+            actualTo,
+            bcc,
+            demoMode: isDemoMode,
+          })
           const replyResult = await sendReplyInThread({
             threadId: threadId!,
-            to: DEMO_SUPPLIER_EMAIL,
+            to: actualTo,
             subject: sentSubject,
             bodyText: sentBodyText,
+            bcc,
           })
           
           console.log('[SEND_ROUTE] gmail response (reply)', {
@@ -377,18 +447,41 @@ export async function POST(request: NextRequest) {
             threadId: replyResult.threadId,
           })
           
+          // [SEND] Log B: After Gmail send returns (inbox search reply)
+          console.info('[SEND] gmail send returned', {
+            caseId,
+            gmailMessageId: replyResult.gmailMessageId,
+            threadId: replyResult.threadId,
+            action: 'REPLY_IN_THREAD',
+          })
+          
           gmailMessageId = replyResult.gmailMessageId
           threadId = replyResult.threadId
+          
+          // [SEND] gmail result - minimal debug log
+          console.log('[SEND] gmail result', { gmailMessageId, threadId })
         } else {
           // NOT_FOUND - send new email
           action = 'SEND_NEW'
-          console.log('[SEND_ROUTE] about to call gmail (new email)')
-          // DEMO OVERRIDE — do not use in production
-          console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
+          
+          // Demo mode handling:
+          // - If DEMO_MODE === 'true': redirect TO to supplierbart@gmail.com
+          // - Always add BCC to supplierbart@gmail.com for safety
+          const isDemoMode = process.env.DEMO_MODE === 'true'
+          const actualTo = isDemoMode ? DEMO_SUPPLIER_EMAIL : supplierEmail
+          const bcc = DEMO_SUPPLIER_EMAIL // Always BCC for safety
+          
+          console.log('[SEND_ROUTE] about to call gmail (new email)', {
+            displayTo: supplierEmail,
+            actualTo,
+            bcc,
+            demoMode: isDemoMode,
+          })
           const sendResult = await sendNewEmail({
-            to: DEMO_SUPPLIER_EMAIL,
+            to: actualTo,
             subject: emailDraft.subject,
             bodyText: emailDraft.bodyText,
+            bcc,
           })
           
           console.log('[SEND_ROUTE] gmail response (new)', {
@@ -396,19 +489,42 @@ export async function POST(request: NextRequest) {
             threadId: sendResult.threadId,
           })
           
+          // [SEND] Log B: After Gmail send returns (inbox search new)
+          console.info('[SEND] gmail send returned', {
+            caseId,
+            gmailMessageId: sendResult.gmailMessageId,
+            threadId: sendResult.threadId,
+            action: 'SEND_NEW',
+          })
+          
           gmailMessageId = sendResult.gmailMessageId
           threadId = sendResult.threadId
+          
+          // [SEND] gmail result - minimal debug log
+          console.log('[SEND] gmail result', { gmailMessageId, threadId })
         }
       } catch (searchError) {
         console.error('[SEND_ROUTE] error during inbox search, falling back to new email:', searchError)
         // Fall through to send new email
-        console.log('[SEND_ROUTE] about to call gmail (fallback after search error)')
-        // DEMO OVERRIDE — do not use in production
-        console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
+        
+        // Demo mode handling:
+        // - If DEMO_MODE === 'true': redirect TO to supplierbart@gmail.com
+        // - Always add BCC to supplierbart@gmail.com for safety
+        const isDemoMode = process.env.DEMO_MODE === 'true'
+        const actualTo = isDemoMode ? DEMO_SUPPLIER_EMAIL : supplierEmail
+        const bcc = DEMO_SUPPLIER_EMAIL // Always BCC for safety
+        
+        console.log('[SEND_ROUTE] about to call gmail (fallback after search error)', {
+          displayTo: supplierEmail,
+          actualTo,
+          bcc,
+          demoMode: isDemoMode,
+        })
         const sendResult = await sendNewEmail({
-          to: DEMO_SUPPLIER_EMAIL,
+          to: actualTo,
           subject: emailDraft.subject,
           bodyText: emailDraft.bodyText,
+          bcc,
         })
         
         console.log('[SEND_ROUTE] gmail response (fallback)', {
@@ -416,18 +532,41 @@ export async function POST(request: NextRequest) {
           threadId: sendResult.threadId,
         })
         
+        // [SEND] Log B: After Gmail send returns (fallback)
+        console.info('[SEND] gmail send returned', {
+          caseId,
+          gmailMessageId: sendResult.gmailMessageId,
+          threadId: sendResult.threadId,
+          action: 'SEND_NEW',
+        })
+        
         gmailMessageId = sendResult.gmailMessageId
         threadId = sendResult.threadId
+        
+        // [SEND] gmail result - minimal debug log
+        console.log('[SEND] gmail result', { gmailMessageId, threadId })
       }
     } else if (!isForced) {
       // No inbox search and not forced, send new email
-      console.log('[SEND_ROUTE] about to call gmail (no inbox search)')
-      // DEMO OVERRIDE — do not use in production
-      console.log('[AGENT_SEND] demo override recipient supplierbart@gmail.com (original:', supplierEmail, ')')
+      
+      // Demo mode handling:
+      // - If DEMO_MODE === 'true': redirect TO to supplierbart@gmail.com
+      // - Always add BCC to supplierbart@gmail.com for safety
+      const isDemoMode = process.env.DEMO_MODE === 'true'
+      const actualTo = isDemoMode ? DEMO_SUPPLIER_EMAIL : supplierEmail
+      const bcc = DEMO_SUPPLIER_EMAIL // Always BCC for safety
+      
+      console.log('[SEND_ROUTE] about to call gmail (no inbox search)', {
+        displayTo: supplierEmail,
+        actualTo,
+        bcc,
+        demoMode: isDemoMode,
+      })
       const sendResult = await sendNewEmail({
-        to: DEMO_SUPPLIER_EMAIL,
+        to: actualTo,
         subject: emailDraft.subject,
         bodyText: emailDraft.bodyText,
+        bcc,
       })
       
       console.log('[SEND_ROUTE] gmail response (no search)', {
@@ -435,8 +574,19 @@ export async function POST(request: NextRequest) {
         threadId: sendResult.threadId,
       })
       
+      // [SEND] Log B: After Gmail send returns (no search)
+      console.info('[SEND] gmail send returned', {
+        caseId,
+        gmailMessageId: sendResult.gmailMessageId,
+        threadId: sendResult.threadId,
+        action: 'SEND_NEW',
+      })
+      
       gmailMessageId = sendResult.gmailMessageId
       threadId = sendResult.threadId
+      
+      // [SEND] gmail result - minimal debug log
+      console.log('[SEND] gmail result', { gmailMessageId, threadId })
     }
     
     // Persist outbound message
@@ -454,51 +604,135 @@ export async function POST(request: NextRequest) {
         received_at: Date.now(),
       })
       
-      // Persist threadId and last sent message info to case.meta
+      // Build meta updates for threadId and last sent message info
+      const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
       if (threadId) {
-        const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
         if (meta.thread_id !== threadId) {
           meta.thread_id = threadId
         }
-        meta.last_sent_message_id = gmailMessageId
         meta.last_sent_thread_id = threadId
+      }
+      if (gmailMessageId) {
+        meta.last_sent_message_id = gmailMessageId
         meta.last_sent_at = Date.now()
         meta.last_sent_subject = sentSubject
-        updateCase(caseId, { meta })
-        console.log('[THREAD_PERSIST] send', { caseId, threadId, gmailMessageId })
+      }
+      console.log('[THREAD_PERSIST] send', { caseId, threadId, gmailMessageId })
+      
+      // Update case state via transitionCase (only if email was actually sent)
+      // Get current state before transition for logging
+      const fromState = caseData.state
+      
+      // [SEND] transitioning case - log before transition
+      console.log('[SEND] transitioning case', {
+        caseId,
+        fromState,
+        toState: CaseState.OUTREACH_SENT,
+      })
+      
+      try {
+        transitionCase({
+          caseId,
+          toState: CaseState.OUTREACH_SENT,
+          event: TransitionEvent.OUTREACH_SENT_OK,
+          summary: `Sent confirmation email for PO ${poNumber} Line ${lineId}${usedReply ? ' (reply in thread)' : ' (new email)'}`,
+          patch: {
+            status: CaseStatus.STILL_AMBIGUOUS,
+            meta,
+            last_action_at: Date.now(),
+            touch_count: caseData.touch_count + 1,
+          },
+        })
+        
+        // [SEND] Log: Success - add event
+        addEvent(caseId, {
+          case_id: caseId,
+          timestamp: Date.now(),
+          event_type: 'EMAIL_SENT',
+          summary: `Sent outreach email for PO ${poNumber} Line ${lineId}${usedReply ? ' (reply in thread)' : ' (new email)'}`,
+          evidence_refs_json: {
+            message_ids: gmailMessageId ? [gmailMessageId] : [],
+            attachment_ids: [],
+          },
+          meta_json: {
+            threadId,
+            to: supplierEmail,
+            usedReply,
+            missingFieldsAsked,
+            gmailMessageId,
+          },
+        })
+        
+        // Fetch case again after transition to get updated state
+        const updatedCase = getCase(caseId)
+        if (!updatedCase) {
+          console.error('[SEND] case not found after transition', { caseId })
+        } else {
+          // [SEND] transitioned - log after successful transition
+          console.log('[SEND] transitioned', {
+            caseId,
+            newState: updatedCase.state,
+            next_check_at: updatedCase.next_check_at,
+          })
+        }
+        
+        console.info('[SEND] transitionCase succeeded', { caseId, toState: CaseState.OUTREACH_SENT })
+      } catch (transitionError: any) {
+        // [SEND] transition failed - log error
+        console.error('[SEND] transition failed', { caseId, error: transitionError.message })
+        
+        // Add failure event
+        addEvent(caseId, {
+          case_id: caseId,
+          timestamp: Date.now(),
+          event_type: 'OUTREACH_SEND_FAILED',
+          summary: `Failed to transition case to OUTREACH_SENT after sending email: ${transitionError.message}`,
+          evidence_refs_json: {
+            message_ids: gmailMessageId ? [gmailMessageId] : [],
+            attachment_ids: [],
+          },
+          meta_json: {
+            threadId,
+            to: supplierEmail,
+            gmailMessageId,
+            error: transitionError.message,
+            errorStack: transitionError.stack,
+          },
+        })
+        
+        // Return error response instead of swallowing
+        return NextResponse.json(
+          {
+            ok: false,
+            error: 'transition_failed',
+            details: transitionError.message,
+            gmailMessageId,
+            threadId,
+          },
+          { status: 500 }
+        )
       }
     }
-    
-    // Log EMAIL_SENT event
-    addEvent(caseId, {
-      case_id: caseId,
-      timestamp: Date.now(),
-      event_type: 'EMAIL_SENT',
-      summary: `Sent confirmation email for PO ${poNumber} Line ${lineId}${usedReply ? ' (reply in thread)' : ' (new email)'}`,
-      evidence_refs_json: {
-        message_ids: gmailMessageId ? [gmailMessageId] : [],
-        attachment_ids: [],
-      },
-      meta_json: {
-        threadId,
-        to: supplierEmail,
-        usedReply,
-        missingFieldsAsked,
-      },
-    })
-    
-    // Update case state
-    updateCase(caseId, {
-      state: CaseState.OUTREACH_SENT,
-      status: CaseStatus.STILL_AMBIGUOUS,
-      last_action_at: Date.now(),
-      touch_count: caseData.touch_count + 1,
-    })
     
     // Normalize action: if we actually sent, use 'sent'
     const finalAction = gmailMessageId ? 'sent' : action
     
-    const response = {
+    // Fetch case state after transition (if email was sent and transition occurred)
+    let returnedCaseState: string | undefined
+    let returnedNextCheckAt: number | null | undefined
+    let returnedUpdatedAt: number | undefined
+    
+    if (gmailMessageId) {
+      // Re-fetch case to get updated state after transition
+      const finalCase = getCase(caseId)
+      if (finalCase) {
+        returnedCaseState = finalCase.state
+        returnedNextCheckAt = finalCase.next_check_at
+        returnedUpdatedAt = finalCase.updated_at
+      }
+    }
+    
+    const response: any = {
       ok: true,
       action: finalAction,
       gmailMessageId,
@@ -508,16 +742,46 @@ export async function POST(request: NextRequest) {
       searchResult,
     }
     
+    // Include case state info if available
+    if (returnedCaseState !== undefined) {
+      response.returnedCaseState = returnedCaseState
+      response.returnedNextCheckAt = returnedNextCheckAt
+      response.returnedUpdatedAt = returnedUpdatedAt
+    }
+    
     console.log('[SEND_ROUTE] success', {
       action: finalAction,
       gmailMessageId,
       threadId,
+      returnedCaseState,
+      returnedNextCheckAt,
     })
     
     return NextResponse.json(response)
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Failed to send confirmation email'
     console.error('[SEND_ROUTE] fatal error', error)
+    
+    // [SEND] Log: Fatal error - try to add failure event if we have caseId
+    if (caseId) {
+      try {
+        addEvent(caseId, {
+          case_id: caseId,
+          timestamp: Date.now(),
+          event_type: 'OUTREACH_SEND_FAILED',
+          summary: `Failed to send outreach email: ${errorMsg}`,
+          evidence_refs_json: null,
+          meta_json: {
+            error: errorMsg,
+            errorStack: error instanceof Error ? error.stack : undefined,
+          },
+        })
+      } catch (eventError) {
+        // Ignore errors when adding failure event
+        console.warn('[SEND] failed to add failure event', eventError)
+      }
+    }
+    
     return NextResponse.json(
       { ok: false, error: errorMsg },
       { status: 500 }

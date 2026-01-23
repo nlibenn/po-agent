@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { listAttachmentsForCase, listMessages } from '@/src/lib/supplier-agent/store'
+import { getAttachmentsForCase } from '@/src/lib/supplier-agent/store'
 import { getDb } from '@/src/lib/supplier-agent/storage/sqlite'
 
 export const runtime = 'nodejs'
@@ -60,14 +60,15 @@ export async function GET(request: NextRequest) {
       filename: string | null
       mime_type: string | null
       text_extract: string | null
+      binary_data_base64: string | null
       created_at: number
       thread_id: string | null
       received_at: number | null
     }> = []
 
     if (caseId) {
-      // Get attachments via case (using existing function)
-      const caseAttachments = listAttachmentsForCase(caseId)
+      // Get attachments via case using utility function (includes thread_id and received_at)
+      const caseAttachments = getAttachmentsForCase(caseId)
       attachments = caseAttachments.map(att => ({
         attachment_id: att.attachment_id,
         message_id: att.message_id,
@@ -75,21 +76,27 @@ export async function GET(request: NextRequest) {
         filename: att.filename,
         mime_type: att.mime_type,
         text_extract: att.text_extract,
+        binary_data_base64: att.binary_data_base64,
         created_at: att.created_at,
-        thread_id: null, // Will be populated from messages
-        received_at: null, // Will be populated from messages
+        thread_id: att.thread_id,
+        received_at: att.received_at,
       }))
 
-      // Get thread_id and received_at from messages
-      const messages = listMessages(caseId)
-      const messageMap = new Map(messages.map(m => [m.message_id, m]))
-      attachments = attachments.map(att => {
-        const msg = messageMap.get(att.message_id)
-        return {
-          ...att,
-          thread_id: msg?.thread_id || null,
-          received_at: msg?.received_at || null,
-        }
+      // Debug logging
+      console.log('[ATTACH_LIST] Found attachments for case', {
+        caseId,
+        totalAttachments: attachments.length,
+        pdfCount: attachments.filter(a => a.mime_type === 'application/pdf').length,
+        attachments: attachments.map(a => ({
+          attachment_id: a.attachment_id,
+          filename: a.filename,
+          mime_type: a.mime_type,
+          has_text_extract: !!a.text_extract,
+          text_extract_length: a.text_extract?.length || 0,
+          has_binary_data: !!a.binary_data_base64,
+          binary_data_length: a.binary_data_base64 ? a.binary_data_base64.length : 0,
+          thread_id: a.thread_id,
+        })),
       })
     } else if (threadId) {
       // Get attachments via thread_id
@@ -101,6 +108,7 @@ export async function GET(request: NextRequest) {
           a.filename,
           a.mime_type,
           a.text_extract,
+          a.binary_data_base64,
           a.created_at,
           m.thread_id,
           m.received_at
@@ -111,16 +119,19 @@ export async function GET(request: NextRequest) {
         ORDER BY COALESCE(m.received_at, a.created_at) DESC
       `)
       attachments = stmt.all(threadId) as typeof attachments
+      
+      console.log('[ATTACH_LIST] Found attachments for thread', {
+        threadId,
+        totalAttachments: attachments.length,
+      })
     }
 
     // Filter to PDFs only and calculate metadata
     const pdfAttachments = attachments
       .filter(att => att.mime_type === 'application/pdf')
       .map(att => {
-        // Calculate size from base64 if available
-        const sizeStmt = db.prepare('SELECT LENGTH(binary_data_base64) as size FROM attachments WHERE attachment_id = ?')
-        const sizeRow = sizeStmt.get(att.attachment_id) as { size: number } | undefined
-        const sizeBytes = sizeRow?.size ? Math.floor(sizeRow.size * 3 / 4) : null
+        // Calculate size from base64 if available (use already-fetched binary_data_base64)
+        const sizeBytes = att.binary_data_base64 ? Math.floor(att.binary_data_base64.length * 3 / 4) : null
 
         // Calculate extracted_length from text_extract
         const extractedLength = att.text_extract ? att.text_extract.length : 0
@@ -140,11 +151,19 @@ export async function GET(request: NextRequest) {
           text_extract: att.text_extract,
           extracted_length: extractedLength,
           scanned_like: scannedLike,
+          // Debug info: b64/text lengths
+          binary_data_length: att.binary_data_base64 ? att.binary_data_base64.length : 0,
+          text_extract_length: extractedLength,
         }
       })
 
     const dbCount = pdfAttachments.length
-    console.log('[ATTACH_LIST]', { caseId: caseId || 'N/A', threadId: threadId || 'N/A', returnedCount: dbCount })
+    console.log('[ATTACH_LIST] Final result', { 
+      caseId: caseId || 'N/A', 
+      threadId: threadId || 'N/A', 
+      returnedCount: dbCount,
+      pdfFilenames: pdfAttachments.map(a => a.filename),
+    })
 
     return NextResponse.json({
       attachments: pdfAttachments,

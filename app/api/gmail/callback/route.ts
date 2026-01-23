@@ -27,6 +27,8 @@ export async function GET(request: NextRequest) {
     // Exchange code for tokens
     await exchangeCodeForTokens(code)
 
+    console.log('Gmail callback succeeded')
+
     // Redirect to /home after successful authentication
     return NextResponse.redirect(new URL('/home', request.url))
   } catch (error) {

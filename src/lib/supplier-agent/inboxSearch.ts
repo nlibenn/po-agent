@@ -10,8 +10,12 @@
 import 'server-only'
 
 import { getGmailClient } from '../gmail/client'
-import { getCase, addEvent, addMessage } from './store'
+import { getCase, addEvent, addMessage, listAttachmentsForCase } from './store'
 import type { SupplierChaseCase, EventType } from './types'
+import { retrievePdfAttachmentsFromThread } from './emailAttachments'
+import { parseConfirmationFieldsSmart } from './parseConfirmationFields'
+import { extractTextFromPdfBase64 } from './pdfTextExtraction'
+import { getDb } from './storage/sqlite'
 
 export interface InboxSearchParams {
   caseId: string
@@ -49,6 +53,25 @@ export interface SearchResult {
     date: number
     score: number
   }>
+  pdfCount: number
+  hasPdfs: boolean
+  parsedData?: {
+    supplier_order_number: string | null
+    delivery_date: string | null
+    quantity: number | null
+    unit_price: number | null
+    extended_price?: number | null
+    currency?: string | null
+    payment_terms?: string | null
+    freight_terms?: string | null
+    freight_cost?: number | null
+    subtotal?: number | null
+    tax_amount?: number | null
+    order_total?: number | null
+    notes?: string | null
+    backorder_status?: string | null
+  }
+  hasParsedData: boolean
 }
 
 /**
@@ -306,12 +329,21 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
         meta_json: { query },
       })
       
+      // Count PDF attachments even if no messages found
+      const attachments = listAttachmentsForCase(caseId)
+      const pdfCount = attachments.filter(a => a.mime_type === 'application/pdf').length
+      const hasPdfs = pdfCount > 0
+      
       return {
         classification: 'NOT_FOUND',
         matchedMessageIds: [],
         extractedFields: {},
         missingFields: caseData.missing_fields,
         topCandidates: [],
+        pdfCount,
+        hasPdfs,
+        parsedData: undefined,
+        hasParsedData: false,
       }
     }
     
@@ -464,20 +496,157 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
       }
     }
     
-    // Determine missing fields
+    // AUTOMATIC PDF PARSING: If we found a thread, retrieve and parse PDF attachments
+    let parsedData: SearchResult['parsedData'] | undefined = undefined
+    let hasParsedData = false
+    
+    if (topCandidates.length > 0 && topCandidates[0]?.threadId) {
+      const threadId = topCandidates[0].threadId
+      console.log(`[INBOX_SEARCH] Retrieving PDF attachments from thread ${threadId} for automatic parsing`)
+      
+      try {
+        // Retrieve PDF attachments from the thread
+        await retrievePdfAttachmentsFromThread({
+          caseId,
+          threadId,
+        })
+        
+        // Get PDF attachments with binary data
+        const db = getDb()
+        const rawAttachments = db
+          .prepare(`
+            SELECT a.attachment_id, a.filename, a.text_extract, a.binary_data_base64
+            FROM attachments a
+            INNER JOIN messages m ON m.message_id = a.message_id
+            WHERE m.case_id = ?
+              AND a.mime_type = 'application/pdf'
+            ORDER BY m.received_at DESC
+          `)
+          .all(caseId) as Array<{
+            attachment_id: string
+            filename: string | null
+            text_extract: string | null
+            binary_data_base64: string | null
+          }>
+        
+        if (rawAttachments.length > 0) {
+          console.log(`[INBOX_SEARCH] Found ${rawAttachments.length} PDF attachment(s), extracting text and parsing...`)
+          
+          // Extract text from PDFs
+          const pdfTexts: Array<{ attachment_id: string; text: string | null }> = []
+          
+          for (const att of rawAttachments) {
+            let text = att.text_extract
+            
+            if ((!text || text.trim().length === 0) && att.binary_data_base64) {
+              try {
+                text = await extractTextFromPdfBase64(att.binary_data_base64)
+                if (text && text.trim().length > 0) {
+                  db.prepare('UPDATE attachments SET text_extract = ? WHERE attachment_id = ?')
+                    .run(text, att.attachment_id)
+                }
+              } catch (e) {
+                console.warn(`[INBOX_SEARCH] PDF extraction failed for ${att.attachment_id}:`, e)
+              }
+            }
+            
+            if (text && text.trim().length > 0) {
+              pdfTexts.push({ attachment_id: att.attachment_id, text })
+            }
+          }
+          
+          if (pdfTexts.length > 0) {
+            console.log(`[INBOX_SEARCH] Extracted text from ${pdfTexts.length} PDF(s), parsing confirmation fields...`)
+            
+            // Extract expected quantity and unit price from case meta if available
+            let expectedQty: number | null = null
+            let expectedUnitPrice: number | null = null
+            if (caseData.meta) {
+              try {
+                const meta = typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : caseData.meta
+                if (meta.po_line?.ordered_quantity) {
+                  const qty = typeof meta.po_line.ordered_quantity === 'number' 
+                    ? meta.po_line.ordered_quantity 
+                    : parseFloat(String(meta.po_line.ordered_quantity))
+                  if (Number.isFinite(qty) && qty > 0) {
+                    expectedQty = qty
+                  }
+                }
+                if (meta.po_line?.unit_price) {
+                  const price = typeof meta.po_line.unit_price === 'number'
+                    ? meta.po_line.unit_price
+                    : parseFloat(String(meta.po_line.unit_price).replace(/[$,\s]/g, ''))
+                  if (Number.isFinite(price) && price > 0) {
+                    expectedUnitPrice = price
+                  }
+                }
+              } catch (e) {
+                // Ignore parse errors
+              }
+            }
+            
+            // Parse confirmation fields using smart parser
+            const parsed = await parseConfirmationFieldsSmart({
+              poNumber,
+              lineId: params.lineId,
+              pdfTexts,
+              expectedQty: expectedQty ?? undefined,
+              expectedUnitPrice: expectedUnitPrice ?? undefined,
+              debug: false,
+            })
+            
+            // Extract parsed data
+            parsedData = {
+              supplier_order_number: parsed.supplier_order_number.value,
+              delivery_date: parsed.confirmed_delivery_date.value,
+              quantity: parsed.supplier_confirmed_quantity.value,
+              unit_price: parsed.unit_price?.value ?? null,
+              extended_price: parsed.extended_price?.value ?? null,
+              currency: parsed.currency?.value ?? null,
+              payment_terms: parsed.payment_terms?.value ?? null,
+              freight_terms: parsed.freight_terms?.value ?? null,
+              freight_cost: parsed.freight_cost?.value ?? null,
+              subtotal: parsed.subtotal?.value ?? null,
+              tax_amount: parsed.tax_amount?.value ?? null,
+              order_total: parsed.order_total?.value ?? null,
+              notes: parsed.notes?.value ?? null,
+              backorder_status: parsed.backorder_status?.value ?? null,
+            }
+            
+            hasParsedData = !!(parsedData.supplier_order_number || parsedData.delivery_date || parsedData.quantity !== null)
+            
+            console.log(`[INBOX_SEARCH] PDF parsing complete:`, {
+              hasParsedData,
+              supplier_order_number: parsedData.supplier_order_number,
+              delivery_date: parsedData.delivery_date,
+              quantity: parsedData.quantity,
+            })
+          }
+        }
+      } catch (parseError) {
+        console.error(`[INBOX_SEARCH] Error parsing PDFs:`, parseError)
+        // Continue without parsed data - don't fail the whole search
+      }
+    }
+    
+    // Determine missing fields - now consider both email text AND parsed PDF data
     const missingFields: string[] = []
     for (const field of caseData.missing_fields) {
-      if (field === 'delivery_date' && !extractedFields.deliveryDate && !extractedFields.shipDate) {
-        missingFields.push(field)
-      } else if (field === 'ship_date' && !extractedFields.shipDate) {
-        missingFields.push(field)
-      } else if (field === 'pricing_basis' && !extractedFields.pricingBasis) {
-        missingFields.push(field)
-      } else if (field === 'supplier_reference' && !extractedFields.supplierReferenceNumber) {
-        missingFields.push(field)
-      } else if (field === 'acknowledgement' && !extractedFields.acknowledgement) {
-        missingFields.push(field)
-      } else if (field === 'quantity' && !extractedFields.quantity) {
+      // Check both email text extraction and PDF parsing results
+      const foundInEmail = 
+        (field === 'delivery_date' && (extractedFields.deliveryDate || extractedFields.shipDate)) ||
+        (field === 'ship_date' && extractedFields.shipDate) ||
+        (field === 'pricing_basis' && extractedFields.pricingBasis) ||
+        (field === 'supplier_reference' && extractedFields.supplierReferenceNumber) ||
+        (field === 'acknowledgement' && extractedFields.acknowledgement) ||
+        (field === 'quantity' && extractedFields.quantity)
+      
+      const foundInPdf = parsedData &&
+        ((field === 'delivery_date' && parsedData.delivery_date) ||
+         (field === 'supplier_reference' && parsedData.supplier_order_number) ||
+         (field === 'quantity' && parsedData.quantity !== null))
+      
+      if (!foundInEmail && !foundInPdf) {
         missingFields.push(field)
       }
     }
@@ -497,6 +666,11 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
       eventType = 'INBOX_SEARCH_NOT_FOUND'
     }
     
+    // Count PDF attachments for this case
+    const attachments = listAttachmentsForCase(caseId)
+    const pdfCount = attachments.filter(a => a.mime_type === 'application/pdf').length
+    const hasPdfs = pdfCount > 0
+    
     // Log classification event
     addEvent(caseId, {
       case_id: caseId,
@@ -511,6 +685,10 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
         extractedFields,
         missingFields,
         topThreadId: topCandidates[0]?.threadId,
+        pdfCount,
+        hasPdfs,
+        hasParsedData,
+        parsedData,
       },
     })
     
@@ -521,6 +699,10 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
       extractedFields,
       missingFields,
       topCandidates,
+      pdfCount,
+      hasPdfs,
+      parsedData,
+      hasParsedData,
     }
   } catch (error) {
     console.error('Error searching Gmail inbox:', error)

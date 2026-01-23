@@ -956,7 +956,11 @@ export function SupplierConfirmationDrawer({
   }
 
   const handleSend = async () => {
-    if (!caseId) return
+    if (!caseId) {
+      setError('No case selected. Please refresh the drawer.')
+      setTimeout(() => setError(null), 3000)
+      return
+    }
 
     setSending(true)
     setError(null)
@@ -1528,7 +1532,15 @@ export function SupplierConfirmationDrawer({
   }
 
   const handleApproveAndSend = async () => {
-    if (!caseId || !agentResult?.drafted_email) return
+    if (!caseId) {
+      setError('Select a PO first')
+      setTimeout(() => setError(null), 3000)
+      return
+    }
+    
+    if (!agentResult?.drafted_email) {
+      return
+    }
 
     setSending(true)
     setError(null)

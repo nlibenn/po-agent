@@ -4,14 +4,16 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useWorkspace } from '@/components/WorkspaceProvider'
 import { useEffect, useState } from 'react'
-import { Home, FolderOpen, Package, AlertCircle, FileCheck } from 'lucide-react'
+import { Home, FolderOpen, Package, AlertCircle, FileCheck, CheckSquare } from 'lucide-react'
 
 const navItems = [
   { href: '/home', label: 'Home', priority: 'highest', dataDependent: false, icon: Home },
+  { href: '/acknowledgements', label: 'Acks', priority: 'primary', dataDependent: true, icon: CheckSquare },
   { href: '/drive', label: 'Drive', priority: 'highest', dataDependent: false, icon: FolderOpen },
-  { href: '/releases', label: 'Releases', priority: 'highest', dataDependent: true, icon: Package },
-  { href: '/exceptions', label: 'Exceptions', priority: 'primary', dataDependent: true, icon: AlertCircle },
-  { href: '/unconfirmed-pos', label: 'Unconfirmed POs', priority: 'muted', dataDependent: true, icon: FileCheck },
+  // Hide these for now per scope - focus on acknowledgements only
+  // { href: '/releases', label: 'Releases', priority: 'highest', dataDependent: true, icon: Package },
+  // { href: '/exceptions', label: 'Exceptions', priority: 'primary', dataDependent: true, icon: AlertCircle },
+  // { href: '/unconfirmed-pos', label: 'Unconfirmed POs', priority: 'muted', dataDependent: true, icon: FileCheck },
 ]
 
 export function BuyerWorkbenchNav() {
@@ -20,11 +22,12 @@ export function BuyerWorkbenchNav() {
   const hasWorkspaceData = rows.length > 0
   const [isInspectorOpen, setIsInspectorOpen] = useState(false)
   
-  // Check if inspector is open via body data attribute (only on unconfirmed-pos page)
+  // Check if inspector/workbench is open via body data attribute
   useEffect(() => {
     const checkInspector = () => {
       const isOpen = document.body.getAttribute('data-inspector-open') === 'true'
-      setIsInspectorOpen(isOpen)
+      const isAckWorkbench = document.body.getAttribute('data-ack-workbench') === 'true'
+      setIsInspectorOpen(isOpen || isAckWorkbench)
     }
     
     // Check initially
@@ -32,14 +35,15 @@ export function BuyerWorkbenchNav() {
     
     // Watch for changes via MutationObserver
     const observer = new MutationObserver(checkInspector)
-    observer.observe(document.body, { attributes: true, attributeFilter: ['data-inspector-open'] })
+    observer.observe(document.body, { attributes: true, attributeFilter: ['data-inspector-open', 'data-ack-workbench'] })
     
     return () => observer.disconnect()
   }, [])
   
-  // Only collapse on unconfirmed-pos page
+  // Collapse on unconfirmed-pos page with inspector or on acknowledgements page (always icon-only)
   const isUnconfirmedPosPage = pathname === '/unconfirmed-pos'
-  const shouldCollapse = isUnconfirmedPosPage && isInspectorOpen
+  const isAcknowledgementsPage = pathname === '/acknowledgements'
+  const shouldCollapse = (isUnconfirmedPosPage && isInspectorOpen) || isAcknowledgementsPage
 
   const getPriorityClasses = (priority: string, isActive: boolean, dataDependent: boolean, hasData: boolean) => {
     // Active state always wins - pill background takes precedence over workspace state

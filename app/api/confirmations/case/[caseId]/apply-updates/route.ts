@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getCase, updateCase, addEvent } from '@/src/lib/supplier-agent/store'
 import { CaseState, CaseStatus } from '@/src/lib/supplier-agent/types'
 import { getDb } from '@/src/lib/supplier-agent/storage/sqlite'
+import { transitionCase, TransitionEvent } from '@/src/lib/supplier-agent/stateMachine'
+import { CANONICAL_FIELD_KEYS, normalizeMissingFields } from '@/src/lib/supplier-agent/fieldMapping'
 
 export const runtime = 'nodejs'
 
@@ -17,9 +19,13 @@ type FieldPayload<T> = {
 type ApplyUpdatesBody = {
   source: ApplySource
   fields: {
+    // Accept both old parser names and canonical keys for backward compatibility
     supplier_order_number?: FieldPayload<string>
+    supplier_reference?: FieldPayload<string>
     confirmed_ship_or_delivery_date?: FieldPayload<string>
+    delivery_date?: FieldPayload<string>
     confirmed_quantity?: FieldPayload<number>
+    quantity?: FieldPayload<number>
   }
 }
 
@@ -68,42 +74,50 @@ export async function POST(
       ? meta.manual_overrides
       : {}) as Record<string, boolean>
 
-    const beforeMissing = Array.isArray(caseData.missing_fields) ? [...caseData.missing_fields] : []
+    const beforeMissing = normalizeMissingFields(
+      Array.isArray(caseData.missing_fields) ? caseData.missing_fields : []
+    )
 
     const nextApplied: Record<string, any> = {}
 
-    // Apply supplier_order_number
-    if (!manualOverrides.supplier_order_number && fields.supplier_order_number && isNonEmptyString(fields.supplier_order_number.value)) {
-      nextApplied.supplier_order_number = {
-        ...fields.supplier_order_number,
+    // Apply supplier_reference (accept supplier_order_number for backward compatibility)
+    const supplierRefField = fields.supplier_reference || fields.supplier_order_number
+    const supplierRefKey = CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE
+    if (!manualOverrides[supplierRefKey] && supplierRefField && isNonEmptyString(supplierRefField.value)) {
+      nextApplied[supplierRefKey] = {
+        ...supplierRefField,
         source,
-        value: fields.supplier_order_number.value.trim(),
+        value: supplierRefField.value.trim(),
       }
     }
 
-    // Apply confirmed_ship_or_delivery_date
+    // Apply delivery_date (accept confirmed_ship_or_delivery_date for backward compatibility)
+    const deliveryDateField = fields.delivery_date || fields.confirmed_ship_or_delivery_date
+    const deliveryDateKey = CANONICAL_FIELD_KEYS.DELIVERY_DATE
     if (
-      !manualOverrides.confirmed_ship_or_delivery_date &&
-      fields.confirmed_ship_or_delivery_date &&
-      isNonEmptyString(fields.confirmed_ship_or_delivery_date.value)
+      !manualOverrides[deliveryDateKey] &&
+      deliveryDateField &&
+      isNonEmptyString(deliveryDateField.value)
     ) {
-      nextApplied.confirmed_ship_or_delivery_date = {
-        ...fields.confirmed_ship_or_delivery_date,
+      nextApplied[deliveryDateKey] = {
+        ...deliveryDateField,
         source,
-        value: fields.confirmed_ship_or_delivery_date.value.trim(),
+        value: deliveryDateField.value.trim(),
       }
     }
 
-    // Apply confirmed_quantity
+    // Apply quantity (accept confirmed_quantity for backward compatibility)
+    const quantityField = fields.quantity || fields.confirmed_quantity
+    const quantityKey = CANONICAL_FIELD_KEYS.QUANTITY
     if (
-      !manualOverrides.confirmed_quantity &&
-      fields.confirmed_quantity &&
-      isFiniteNumber(fields.confirmed_quantity.value)
+      !manualOverrides[quantityKey] &&
+      quantityField &&
+      isFiniteNumber(quantityField.value)
     ) {
-      nextApplied.confirmed_quantity = {
-        ...fields.confirmed_quantity,
+      nextApplied[quantityKey] = {
+        ...quantityField,
         source,
-        value: fields.confirmed_quantity.value,
+        value: quantityField.value,
       }
     }
 
@@ -125,16 +139,31 @@ export async function POST(
 
     const now = Date.now()
 
-    // Update missing_fields (only for fields we applied)
+    // Update missing_fields using canonical keys
     const nextMissing = new Set(beforeMissing)
-    if (mergedAppliedFields.supplier_order_number) nextMissing.delete('supplier_reference')
-    if (mergedAppliedFields.confirmed_ship_or_delivery_date) nextMissing.delete('delivery_date')
-    if (mergedAppliedFields.confirmed_quantity) nextMissing.delete('quantity')
+    if (mergedAppliedFields[CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE]) {
+      nextMissing.delete(CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE)
+    }
+    if (mergedAppliedFields[CANONICAL_FIELD_KEYS.DELIVERY_DATE]) {
+      nextMissing.delete(CANONICAL_FIELD_KEYS.DELIVERY_DATE)
+    }
+    if (mergedAppliedFields[CANONICAL_FIELD_KEYS.QUANTITY]) {
+      nextMissing.delete(CANONICAL_FIELD_KEYS.QUANTITY)
+    }
 
-    // Derive resolution status: treat supplier_order_number + ship/delivery as required (matches UI logic)
-    const hasSupplierOrder = !!mergedAppliedFields.supplier_order_number
-    const hasShipOrDelivery = !!mergedAppliedFields.confirmed_ship_or_delivery_date
-    const isFullyConfirmed = hasSupplierOrder && hasShipOrDelivery
+    // Derive resolution status: supplier_reference + delivery_date are required
+    const hasSupplierRef = !!mergedAppliedFields[CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE]
+    const hasDeliveryDate = !!mergedAppliedFields[CANONICAL_FIELD_KEYS.DELIVERY_DATE]
+    const isFullyConfirmed = hasSupplierRef && hasDeliveryDate
+    
+    console.log('[APPLY_UPDATES] canonical missing_fields', {
+      caseId,
+      before: Array.from(beforeMissing),
+      after: Array.from(nextMissing),
+      hasSupplierRef,
+      hasDeliveryDate,
+      isFullyConfirmed,
+    })
 
     const nextMeta = {
       ...meta,
@@ -147,14 +176,28 @@ export async function POST(
       },
     }
 
-    updateCase(caseId, {
-      missing_fields: Array.from(nextMissing),
-      meta: nextMeta,
-      last_action_at: now,
-      ...(isFullyConfirmed
-        ? { status: CaseStatus.CONFIRMED, state: CaseState.RESOLVED }
-        : {}),
-    })
+    if (isFullyConfirmed) {
+      // Transition to RESOLVED state via state machine
+      transitionCase({
+        caseId,
+        toState: CaseState.RESOLVED,
+        event: TransitionEvent.RESOLVE_OK,
+        summary: 'Fields applied; fully confirmed',
+        patch: {
+          missing_fields: Array.from(nextMissing),
+          meta: nextMeta,
+          status: CaseStatus.CONFIRMED,
+          last_action_at: now,
+        },
+      })
+    } else {
+      // Just update fields without state change
+      updateCase(caseId, {
+        missing_fields: Array.from(nextMissing),
+        meta: nextMeta,
+        last_action_at: now,
+      })
+    }
 
     // Update canonical confirmation record (confirmation_records) for PO/line
     try {
@@ -162,6 +205,10 @@ export async function POST(
       const po_id = caseData.po_number
       const line_id = caseData.line_id
 
+      // Lookup confirmation_record by po_id + line_id
+      const lookupKey = `po_id=${po_id},line_id=${line_id}`
+      console.log('[APPLY_UPDATES] confirmation_record lookup', { caseId, lookupKey })
+      
       const existing = db
         .prepare(
           `
@@ -183,16 +230,28 @@ export async function POST(
           }
         | undefined
 
-      const nextSupplierOrder = mergedAppliedFields.supplier_order_number?.value ?? existing?.supplier_order_number ?? null
-      const nextShipDate = mergedAppliedFields.confirmed_ship_or_delivery_date?.value ?? existing?.confirmed_ship_date ?? null
-      const nextQty = mergedAppliedFields.confirmed_quantity?.value ?? existing?.confirmed_quantity ?? null
+      console.log('[APPLY_UPDATES] confirmation_record found', { 
+        caseId, 
+        found: !!existing,
+        lookupKey,
+      })
+
+      // Map canonical fields to confirmation_records columns
+      const nextSupplierOrder = mergedAppliedFields[CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE]?.value ?? existing?.supplier_order_number ?? null
+      const nextShipDate = mergedAppliedFields[CANONICAL_FIELD_KEYS.DELIVERY_DATE]?.value ?? existing?.confirmed_ship_date ?? null
+      const nextQty = mergedAppliedFields[CANONICAL_FIELD_KEYS.QUANTITY]?.value ?? existing?.confirmed_quantity ?? null
 
       const source_type = source === 'pdf' ? 'sales_order_confirmation' : 'email_body'
       const source_attachment_id =
-        mergedAppliedFields.confirmed_ship_or_delivery_date?.attachment_id ??
-        mergedAppliedFields.supplier_order_number?.attachment_id ??
-        mergedAppliedFields.confirmed_quantity?.attachment_id ??
+        mergedAppliedFields[CANONICAL_FIELD_KEYS.DELIVERY_DATE]?.attachment_id ??
+        mergedAppliedFields[CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE]?.attachment_id ??
+        mergedAppliedFields[CANONICAL_FIELD_KEYS.QUANTITY]?.attachment_id ??
         null
+      
+      // Create confirmation_record if missing
+      if (!existing) {
+        console.log('[APPLY_UPDATES] creating confirmation_record', { caseId, lookupKey })
+      }
 
       db.prepare(
         `

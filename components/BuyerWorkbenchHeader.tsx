@@ -18,6 +18,11 @@ export function BuyerWorkbenchHeader() {
     )
   }
 
+  // Minimal header on Acknowledgements workbench (4-panel layout uses full height)
+  if (pathname === '/acknowledgements') {
+    return null
+  }
+
   const hasWorkspace = source === 'local' || source === 'sample'
 
   return (

@@ -16,6 +16,7 @@ export interface SendEmailParams {
   to: string
   subject: string
   bodyText: string
+  bcc?: string
 }
 
 export interface SendReplyParams {
@@ -25,6 +26,7 @@ export interface SendReplyParams {
   bodyText: string
   replyToMessageId?: string // Gmail message ID to reply to (for In-Reply-To header)
   originalSubject?: string // Original subject (without Re:) for subject normalization
+  bcc?: string
 }
 
 export interface SendEmailResult {
@@ -42,6 +44,7 @@ function buildRawEmail({
   inReplyTo,
   references,
   from,
+  bcc,
 }: {
   to: string
   subject: string
@@ -49,6 +52,7 @@ function buildRawEmail({
   inReplyTo?: string
   references?: string
   from?: string
+  bcc?: string
 }): string {
   const fromEmail = from || process.env.GMAIL_SENDER_EMAIL || 'buyer@example.com'
   const date = new Date().toUTCString()
@@ -70,6 +74,11 @@ function buildRawEmail({
     `MIME-Version: 1.0`,
     `Content-Type: text/plain; charset=UTF-8`,
   ]
+  
+  // Add BCC header if provided
+  if (bcc) {
+    headers.push(`Bcc: ${bcc}`)
+  }
   
   if (inReplyTo) {
     // Format In-Reply-To with angle brackets (RFC 2822)
@@ -120,6 +129,7 @@ export async function sendNewEmail(params: SendEmailParams): Promise<SendEmailRe
     subject: params.subject,
     bodyText: params.bodyText,
     from: fromEmail,
+    bcc: params.bcc,
   })
   
   const encoded = base64UrlEncode(rawEmail)
@@ -228,6 +238,7 @@ export async function sendReplyInThread(params: SendReplyParams): Promise<SendEm
     from: fromEmail,
     inReplyTo,
     references,
+    bcc: params.bcc,
   })
   
   const encoded = base64UrlEncode(rawEmail)

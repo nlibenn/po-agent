@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS cases (
   last_action_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  next_check_at INTEGER, -- unix ms, NULL means no scheduled check
+  last_inbox_check_at INTEGER, -- unix ms, observability only
   meta TEXT NOT NULL DEFAULT '{}' -- JSON object
 );
 
