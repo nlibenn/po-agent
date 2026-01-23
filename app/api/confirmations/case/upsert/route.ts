@@ -179,6 +179,8 @@ export async function POST(request: NextRequest) {
         last_action_at: now,
         created_at: now,
         updated_at: now,
+        next_check_at: null,
+        last_inbox_check_at: null,
         meta,
       })
       

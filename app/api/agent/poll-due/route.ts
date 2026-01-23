@@ -958,7 +958,6 @@ export async function POST(request: NextRequest) {
             threadId: threadId || null,
             messageIds,
             attachmentHashes,
-            retrievalDebug, // ALWAYS include retrievalDebug when foundEvidence=true
           })
           errorCount++
           continue

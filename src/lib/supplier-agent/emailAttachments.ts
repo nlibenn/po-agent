@@ -285,6 +285,7 @@ export async function retrievePdfAttachmentsFromThread(
       try {
         addMessage(caseId, {
           message_id: messageId,
+          case_id: caseId,
           direction,
           thread_id: threadId,
           from_email: getHeader('From'),
@@ -533,7 +534,7 @@ export async function retrievePdfAttachmentsFromThread(
             attachment_id: storedAttachment.attachment_id,
             filename: pdfPart.filename || 'unknown.pdf',
             receivedAt,
-            email_threadId: threadId,
+            email_threadId: threadId ?? '',
             messageId: messageId,
             status: 'PDF_RETRIEVED',
             evidenceType: 'supplier_confirmation_pdf',

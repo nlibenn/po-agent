@@ -205,7 +205,7 @@ export function transitionCase(params: TransitionCaseParams): SupplierChaseCase 
       addEvent(caseId, {
         case_id: caseId,
         timestamp: now,
-        event_type: 'FAILURE',
+        event_type: 'AGENT_DECISION',
         summary: `Transition guardrail check failed: ${error.message}`,
         evidence_refs_json: evidenceRef ? {
           message_ids: evidenceRef.message_id ? [evidenceRef.message_id] : undefined,

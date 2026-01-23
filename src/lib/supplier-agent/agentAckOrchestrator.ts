@@ -221,7 +221,7 @@ function buildNeedsHumanContext(params: {
   }
   
   if (extractedFields?.confirmed_quantity?.value !== null) {
-    knows.push(`Quantity: ${extractedFields.confirmed_quantity.value}`)
+    knows.push(`Quantity: ${extractedFields?.confirmed_quantity?.value ?? ''}`)
   }
   
   // What agent needs
@@ -698,7 +698,7 @@ async function collectEvidence(
           addEvent(caseId, {
             case_id: caseId,
             timestamp: Date.now(),
-            event_type: 'SUPPLIER_EMAIL_AUTO_FILLED',
+            event_type: 'AGENT_DECISION',
             summary: `Auto-filled supplier_email from inbound message: ${cleanEmail}`,
             evidence_refs_json: { message_ids: [latestInbound.message_id] },
             meta_json: { from_email: latestInbound.from_email },
