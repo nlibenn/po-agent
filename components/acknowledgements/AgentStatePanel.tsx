@@ -83,6 +83,7 @@ export function AgentStatePanel({
   }
   
   const agentState = useAgentState()
+  const { setGmailStatus, setPDFs, setCurrentTask, resetTask } = agentState
   const [sessionExpanded, setSessionExpanded] = useState(true)
   const [taskExpanded, setTaskExpanded] = useState(true)
   const [sourcesExpanded, setSourcesExpanded] = useState(true)
@@ -99,20 +100,19 @@ export function AgentStatePanel({
           const data = await response.json()
           const connected = data.connected || false
           setGmailConnected(connected)
-          agentState.setGmailStatus(connected)
+          setGmailStatus(connected)
         }
       } catch (error) {
         console.error('Error checking Gmail status:', error)
         setGmailConnected(false)
-        agentState.setGmailStatus(false)
+        setGmailStatus(false)
       }
     }
 
     checkGmailStatus()
     const interval = setInterval(checkGmailStatus, 30000) // Check every 30s
     return () => clearInterval(interval)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [setGmailStatus])
 
   // Update PDFs in data sources when attachments change
   // FIXED: Removed agentState from dependencies
@@ -123,20 +123,18 @@ export function AgentStatePanel({
         filename: att.filename,
         attachmentId: att.attachment_id,
       }))
-    agentState.setPDFs(pdfs)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachments])
+    setPDFs(pdfs)
+  }, [attachments, setPDFs])
 
   // Update current task when case changes
   // FIXED: Removed agentState from dependencies
   useEffect(() => {
     if (poNumber && lineId) {
-      agentState.setCurrentTask(poNumber, lineId)
+      setCurrentTask(poNumber, lineId)
     } else {
-      agentState.resetTask()
+      resetTask()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [poNumber, lineId])
+  }, [poNumber, lineId, setCurrentTask, resetTask])
 
   const handleExportConfirmed = () => {
     exportConfirmedPOsToCSV(agentState.session.confirmedPOs)

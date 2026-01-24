@@ -93,6 +93,7 @@ export function AgentWorkspace({
   
   const { messages, addMessage, clearMessages, isLoading, setIsLoading, setCaseId } = useAckChat()
   const agentState = useAgentState()
+  const { setCurrentTask } = agentState
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -113,9 +114,8 @@ export function AgentWorkspace({
     // Clear last agent result when case changes
     lastAgentResultRef.current = null
     // Reset task when case changes
-    agentState.setCurrentTask(poNumber || '', lineId || '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caseId, setCaseId, poNumber, lineId])
+    setCurrentTask(poNumber || '', lineId || '')
+  }, [caseId, setCaseId, poNumber, lineId, setCurrentTask])
 
   // Auto-scroll to bottom - only when case is selected
   useEffect(() => {
@@ -720,7 +720,7 @@ export function AgentWorkspace({
   return (
     <div className="h-full flex flex-col bg-white">
       {/* Header */}
-      <div className="flex-shrink-0 px-6 py-3 border-b border-border/50 bg-surface">
+      <div className="flex-shrink-0 px-6 py-3 bg-surface">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-primary-deep/10 flex items-center justify-center">
             <Bot className="w-4 h-4 text-primary-deep" />
@@ -812,7 +812,7 @@ export function AgentWorkspace({
       </div>
 
       {/* Input */}
-      <div className="flex-shrink-0 border-t border-border/50 bg-surface">
+      <div className="flex-shrink-0 bg-surface">
         {/* Text input */}
         <div className="px-6 pb-4 flex gap-3">
           <textarea

@@ -255,37 +255,36 @@ export function AcknowledgementWorkQueue({
                   onClick={() => {
                     onSelectCase(key, po)
                   }}
-                  className={`w-full text-left px-4 py-3 transition-colors ${
+                  className={`w-full text-left px-4 py-2 transition-colors ${
                     isSelected
                       ? 'bg-primary-deep/10 border-l-2 border-l-primary-deep'
                       : 'hover:bg-surface-2/50'
                   }`}
                 >
-                  {/* Row 1: PO number */}
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-text truncate">
+                  {/* Row 1: PO + Supplier (inline) */}
+                  <div className="flex items-center min-w-0 gap-1.5">
+                    <span className="text-sm font-medium text-text shrink-0">
                       {po.po_id}{po.line_id ? `-${po.line_id}` : ''}
                     </span>
-                  </div>
-                  
-                  {/* Row 2: Supplier name */}
-                  <div className="text-xs text-text-muted truncate mt-0.5">
-                    {po.supplier_name || 'Unknown supplier'}
+                    <span className="text-sm text-text-subtle shrink-0">·</span>
+                    <span className="text-sm text-text-muted font-normal truncate min-w-0">
+                      {po.supplier_name || 'Unknown supplier'}
+                    </span>
                   </div>
 
-                  {/* Row 3: Needs tokens */}
+                  {/* Row 2: Needs tokens */}
                   {needTokens.length > 0 && (
-                    <div className="flex gap-1 flex-wrap mt-1.5">
+                    <div className="flex flex-wrap gap-0.5 mt-1">
                       {displayTokens.map((token, idx) => (
                         <span
                           key={idx}
-                          className="px-1.5 py-0.5 text-[10px] rounded bg-surface-2 text-text-muted border border-border/30"
+                          className="px-1.5 py-0.5 text-[9px] leading-4 rounded bg-surface-2 text-text-muted border border-border/30"
                         >
                           {token}
                         </span>
                       ))}
                       {overflowCount > 0 && (
-                        <span className="px-1.5 py-0.5 text-[10px] rounded bg-surface-2 text-text-subtle border border-border/30">
+                        <span className="px-1.5 py-0.5 text-[9px] leading-4 rounded bg-surface-2 text-text-subtle border border-border/30">
                           +{overflowCount}
                         </span>
                       )}

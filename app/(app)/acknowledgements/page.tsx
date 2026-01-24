@@ -248,24 +248,23 @@ function AcknowledgementsPageInner({
   onRunningChange: (running: boolean) => void
   onCaseUpdated: () => void
 }) {
-  const agentState = useAgentState()
-  const workspace = useWorkspace()
+  const { setTotalPOs, setCSVSource, addConfirmedPO } = useAgentState()
+  const { filename } = useWorkspace()
+  const poCount = normalizedRows?.length ?? 0
 
   // Update total POs from normalized rows
   useEffect(() => {
-    if (normalizedRows && normalizedRows.length > 0) {
-      agentState.setTotalPOs(normalizedRows.length)
-    }
-  }, [normalizedRows, agentState])
+    // Avoid depending on the whole agentState object (context value identity changes)
+    // and avoid redundant updates when the count is 0.
+    if (poCount > 0) setTotalPOs(poCount)
+  }, [poCount, setTotalPOs])
 
   // Update CSV source from workspace
   useEffect(() => {
-    if (normalizedRows && normalizedRows.length > 0) {
-      // Get filename from workspace if available
-      const filename = workspace.filename || 'uploaded.csv'
-      agentState.setCSVSource(filename, normalizedRows.length)
+    if (poCount > 0) {
+      setCSVSource(filename || 'uploaded.csv', poCount)
     }
-  }, [normalizedRows, agentState, workspace])
+  }, [filename, poCount, setCSVSource])
 
   // Track confirmed POs when case state changes
   useEffect(() => {
@@ -278,7 +277,7 @@ function AcknowledgementsPageInner({
           const caseData = await response.json()
           if (caseData.status === CaseStatus.CONFIRMED || caseData.status === CaseStatus.CONFIRMED_WITH_RISK) {
             // Add to confirmed POs
-            agentState.addConfirmedPO({
+            addConfirmedPO({
               po_number: activePO.po_id,
               line_id: activePO.line_id || '',
               supplier_name: activePO.supplier_name || null,
@@ -296,8 +295,7 @@ function AcknowledgementsPageInner({
     }
 
     checkCaseStatus()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCaseId, activePO])
+  }, [activeCaseId, activePO, addConfirmedPO])
 
   // Debug: Log when props change
 
