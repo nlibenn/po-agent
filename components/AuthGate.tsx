@@ -3,6 +3,12 @@
 import { useEffect, useState } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 
+// Debug logging helper - only runs at runtime, not during build
+const debugLog = (data: any) => {
+  if (typeof window === 'undefined') return // Skip during SSR/build
+  fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,timestamp:Date.now(),sessionId:'debug-session',runId:'run1'})}).catch(()=>{});
+}
+
 interface GmailStatus {
   connected: boolean
   email?: string
@@ -29,7 +35,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       // Check for success parameter from OAuth callback
       const gmailConnected = searchParams?.get('gmail_connected') === '1'
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuthGate.tsx:28',message:'Success param check',data:{gmailConnected},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      debugLog({location:'AuthGate.tsx:28',message:'Success param check',data:{gmailConnected},hypothesisId:'C'});
       // #endregion
       
       if (gmailConnected) {
@@ -58,7 +64,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           }
         } else {
           // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuthGate.tsx:49',message:'Not connected, redirecting to login',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          debugLog({location:'AuthGate.tsx:49',message:'Not connected, redirecting to login',data:{},hypothesisId:'C'});
           // #endregion
           // Not authenticated - redirect to login
           router.replace('/login')
