@@ -9,15 +9,6 @@ export const runtime = 'nodejs'
  * Check Gmail OAuth connection status (does NOT expose tokens)
  */
 export async function GET(request: NextRequest) {
-  // Mock mode for demo
-  if (process.env.MOCK_GMAIL === 'true') {
-    return NextResponse.json({
-      authenticated: true,
-      email: 'demo.buyer@acmecompany.com',
-      isConfigured: true
-    })
-  }
-
   try {
     const tokens = getTokens()
 
