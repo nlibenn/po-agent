@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useWorkspace } from '@/components/WorkspaceProvider'
 import { AcknowledgementWorkQueue } from '@/components/acknowledgements/AcknowledgementWorkQueue'
 import { AgentWorkspace } from '@/components/acknowledgements/AgentWorkspace'
@@ -204,6 +204,7 @@ export default function AcknowledgementsPage() {
       <AcknowledgementChatProvider>
         <AcknowledgementsPageInner
           normalizedRows={normalizedRows}
+          workQueueRefreshKey={workQueueRefreshKey}
           activeCaseId={activeCaseId}
           activeCaseKey={activeCaseKey}
           activePO={activePO}
@@ -223,6 +224,7 @@ export default function AcknowledgementsPage() {
 
 function AcknowledgementsPageInner({
   normalizedRows,
+  workQueueRefreshKey,
   activeCaseId,
   activeCaseKey,
   activePO,
@@ -236,6 +238,7 @@ function AcknowledgementsPageInner({
   onCaseUpdated,
 }: {
   normalizedRows: any[]
+  workQueueRefreshKey: number
   activeCaseId: string | null
   activeCaseKey: string | null
   activePO: UnconfirmedPO | null
@@ -251,6 +254,116 @@ function AcknowledgementsPageInner({
   const { setTotalPOs, setCSVSource, addConfirmedPO } = useAgentState()
   const { filename } = useWorkspace()
   const poCount = normalizedRows?.length ?? 0
+
+  type AgentActivityStats = { 
+    active: number
+    awaitingReply: number
+    confirmed: number
+    onHold: number 
+  }
+
+  const [agentActivityStats, setAgentActivityStats] = useState<AgentActivityStats>({
+    active: 0,
+    awaitingReply: 0,
+    confirmed: 0,
+    onHold: 0,
+  })
+
+  // Stable callback with idempotent updates (Risk 1 + 2 mitigation)
+  const handleWorkQueueStatsChange = useCallback((next: AgentActivityStats) => {
+    setAgentActivityStats(prev =>
+      prev.active === next.active &&
+      prev.awaitingReply === next.awaitingReply &&
+      prev.confirmed === next.confirmed &&
+      prev.onHold === next.onHold
+        ? prev  // Don't update if unchanged
+        : next
+    )
+  }, [])  // Empty deps = stable identity
+
+  const [caseStates, setCaseStates] = useState<Record<string, { state: CaseState; status: CaseStatus }>>({})
+
+  // Stable key from normalizedRows to trigger fetch only when dataset changes
+  const poLinesKey = useMemo(() => {
+    if (!normalizedRows || normalizedRows.length === 0) return ''
+    return normalizedRows
+      .map(row => `${row.po_id}-${row.line_id || ''}`)
+      .sort()
+      .join('|')
+  }, [normalizedRows])
+
+  useEffect(() => {
+    if (!poLinesKey) {
+      setCaseStates({})
+      handleWorkQueueStatsChange({ active: 0, awaitingReply: 0, confirmed: 0, onHold: 0 })
+      return
+    }
+    
+    // Risk 3 mitigation: abort controller for race conditions
+    const controller = new AbortController()
+    
+    const fetchCaseStates = async () => {
+      try {
+        const poLines = poLinesKey.split('|')
+        const response = await fetch('/api/cases/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ poLines }),
+          signal: controller.signal,
+        })
+        
+        if (!response.ok) return
+        
+        const data = await response.json()
+        const nextStates = (data.cases || {}) as Record<string, { state: CaseState; status: CaseStatus }>
+        setCaseStates(nextStates)
+
+        // Compute counters from returned states (primitives only)
+        let active = 0
+        let awaitingReply = 0
+        let confirmed = 0
+        let needsAttention = 0
+
+        for (const key of poLines) {
+          const caseInfo = nextStates[key]
+          if (!caseInfo) continue
+
+          // Active: Agent is working now
+          if ([CaseState.INBOX_LOOKUP, CaseState.PARSED].includes(caseInfo.state)) {
+            active++
+          }
+          // Awaiting Reply: Email sent, waiting for supplier
+          else if ([CaseState.OUTREACH_SENT, CaseState.WAITING, CaseState.FOLLOWUP_SENT].includes(caseInfo.state)) {
+            awaitingReply++
+          }
+          // Confirmed: Complete
+          else if (
+            caseInfo.state === CaseState.RESOLVED ||
+            [CaseStatus.CONFIRMED, CaseStatus.CONFIRMED_WITH_RISK].includes(caseInfo.status)
+          ) {
+            confirmed++
+          }
+          // Needs Attention: Manual intervention required
+          else if (
+            [CaseState.ESCALATED, CaseState.ERROR].includes(caseInfo.state) ||
+            [CaseStatus.NEEDS_BUYER, CaseStatus.UNRESPONSIVE].includes(caseInfo.status)
+          ) {
+            needsAttention++
+          }
+        }
+
+        handleWorkQueueStatsChange({ active, awaitingReply, confirmed, onHold: needsAttention })
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') {
+          console.error('[CASES_BULK] Fetch failed:', error)
+        }
+      }
+    }
+    
+    fetchCaseStates()
+    
+    return () => controller.abort()
+  }, [poLinesKey, workQueueRefreshKey, handleWorkQueueStatsChange])
 
   // Update total POs from normalized rows
   useEffect(() => {
@@ -327,6 +440,7 @@ function AcknowledgementsPageInner({
         <div className="w-72 flex-shrink-0">
           <AgentStatePanel
             caseId={activeCaseId}
+            agentActivity={agentActivityStats}
             agentResult={agentResult}
             isRunning={isRunning}
             poNumber={activePO?.po_id}
@@ -334,6 +448,7 @@ function AcknowledgementsPageInner({
             supplierName={activePO?.supplier_name}
             threadId={agentResult?.evidence_summary?.thread_id}
             attachments={attachments}
+            normalizedRows={normalizedRows}
           />
         </div>
       </div>

@@ -157,16 +157,6 @@ export async function retrievePdfAttachmentsFromThread(
     }
   }
   
-  // Log attachment retrieval started
-  addEvent(caseId, {
-    case_id: caseId,
-    timestamp: Date.now(),
-    event_type: 'ATTACHMENT_INGESTED',
-    summary: `Retrieving PDF attachments${messageIdsInput.length > 0 ? ` from ${messageIdsInput.length} message(s)` : ` from thread ${threadId}`}`,
-    evidence_refs_json: { message_ids: messageIdsInput },
-    meta_json: { threadId, messageIds: messageIdsInput },
-  })
-  
   try {
     // Fetch messages: either specific messageIds or all messages from thread
     let messagesToProcess: any[] = []
@@ -202,15 +192,6 @@ export async function retrievePdfAttachmentsFromThread(
     }
     
     if (messagesToProcess.length === 0) {
-      addEvent(caseId, {
-        case_id: caseId,
-        timestamp: Date.now(),
-        event_type: 'ATTACHMENT_INGESTED',
-        summary: `No messages found${messageIdsInput.length > 0 ? ` for provided messageIds` : ` in thread ${threadId}`}`,
-        evidence_refs_json: { message_ids: messageIdsInput },
-        meta_json: { threadId, messageIds: messageIdsInput },
-      })
-      
       return {
         caseId,
         retrievedCount: 0,
@@ -553,7 +534,7 @@ export async function retrievePdfAttachmentsFromThread(
       }
     }
     
-    // Log successful retrieval
+    // Log successful retrieval - only when PDFs are actually found
     if (pdfAttachments.length > 0) {
       addEvent(caseId, {
         case_id: caseId,
@@ -569,15 +550,6 @@ export async function retrievePdfAttachmentsFromThread(
           count: pdfAttachments.length,
           filenames: pdfAttachments.map(a => a.filename),
         },
-      })
-    } else {
-      addEvent(caseId, {
-        case_id: caseId,
-        timestamp: Date.now(),
-        event_type: 'ATTACHMENT_INGESTED',
-        summary: `No PDF attachments found in thread ${threadId}`,
-        evidence_refs_json: { message_ids: [] },
-        meta_json: { threadId },
       })
     }
     
@@ -608,16 +580,7 @@ export async function retrievePdfAttachmentsFromThread(
     }
   } catch (error) {
     console.error(`Error retrieving attachments from thread ${threadId}:`, error)
-    
-    addEvent(caseId, {
-      case_id: caseId,
-      timestamp: Date.now(),
-      event_type: 'ATTACHMENT_INGESTED',
-      summary: `Failed to retrieve attachments from thread ${threadId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      evidence_refs_json: { message_ids: [] },
-      meta_json: { threadId, error: error instanceof Error ? error.message : 'Unknown error' },
-    })
-    
+    // Don't log ATTACHMENT_INGESTED for errors - no attachments were actually ingested
     throw error
   }
 }

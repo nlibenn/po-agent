@@ -109,6 +109,33 @@ export function getCase(case_id: string): SupplierChaseCase | null {
 }
 
 /**
+ * List all cases
+ */
+export function getAllCases(): SupplierChaseCase[] {
+  const db = getDb()
+  const rows = db.prepare('SELECT * FROM cases').all() as any[]
+
+  return rows.map((row) => ({
+    case_id: row.case_id,
+    po_number: row.po_number,
+    line_id: row.line_id,
+    supplier_name: row.supplier_name,
+    supplier_email: row.supplier_email,
+    supplier_domain: row.supplier_domain,
+    missing_fields: JSON.parse(row.missing_fields || '[]'),
+    state: row.state as any,
+    status: row.status as any,
+    touch_count: row.touch_count,
+    last_action_at: row.last_action_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    next_check_at: row.next_check_at ?? null,
+    last_inbox_check_at: row.last_inbox_check_at ?? null,
+    meta: JSON.parse(row.meta || '{}'),
+  }))
+}
+
+/**
  * Find a case by PO number and line ID
  */
 export function findCaseByPoLine(po_number: string, line_id: string): SupplierChaseCase | null {

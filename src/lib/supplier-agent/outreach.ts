@@ -121,7 +121,17 @@ export type { ConfirmationEmail } from './emailDraft'
  * Send a new email via Gmail API
  */
 export async function sendNewEmail(params: SendEmailParams): Promise<SendEmailResult> {
-  const gmail = await getGmailClient()
+  let gmail
+  try {
+    gmail = await getGmailClient()
+  } catch (authError: any) {
+    console.error('[SEND_NEW_EMAIL] Failed to get Gmail client', {
+      error: authError.message,
+      stack: authError.stack,
+    })
+    throw new Error(`Gmail authentication failed: ${authError.message}`)
+  }
+  
   const fromEmail = process.env.GMAIL_SENDER_EMAIL || 'buyer@example.com'
   
   const rawEmail = buildRawEmail({
@@ -134,16 +144,75 @@ export async function sendNewEmail(params: SendEmailParams): Promise<SendEmailRe
   
   const encoded = base64UrlEncode(rawEmail)
   
-  const response = await gmail.users.messages.send({
-    userId: 'me',
-    requestBody: {
-      raw: encoded,
-    },
+  console.log('[SEND_NEW_EMAIL] About to call Gmail API', {
+    to: params.to,
+    subject: params.subject,
+    from: fromEmail,
+    hasBcc: !!params.bcc,
+    encodedLength: encoded.length,
   })
   
+  let response
+  try {
+    response = await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: {
+        raw: encoded,
+      },
+    })
+    console.log('[SEND_NEW_EMAIL] Gmail API response', {
+      hasData: !!response.data,
+      hasResponse: !!response,
+      responseKeys: response ? Object.keys(response) : [],
+      dataKeys: response.data ? Object.keys(response.data) : [],
+      id: response.data?.id,
+      threadId: response.data?.threadId,
+      fullResponse: JSON.stringify(response.data, null, 2),
+      responseStatus: (response as any).status,
+      responseStatusText: (response as any).statusText,
+    })
+  } catch (gmailError: any) {
+    console.error('[SEND_NEW_EMAIL] Gmail API call failed', {
+      error: gmailError.message,
+      code: gmailError.code,
+      status: gmailError.status,
+      statusText: gmailError.statusText,
+      response: gmailError.response?.data,
+      responseStatus: gmailError.response?.status,
+      responseHeaders: gmailError.response?.headers,
+      stack: gmailError.stack,
+    })
+    throw new Error(`Gmail API error: ${gmailError.message || 'Unknown error'}`)
+  }
+  
+  // Check response structure - Gmail API should return { data: { id: string, threadId: string } }
+  if (!response || !response.data) {
+    console.error('[SEND_NEW_EMAIL] Gmail API returned invalid response structure', {
+      response: response,
+      responseType: typeof response,
+      hasData: !!response?.data,
+    })
+    throw new Error('Gmail API returned invalid response structure')
+  }
+  
+  const gmailMessageId = response.data.id
+  const threadId = response.data.threadId
+  
+  if (!gmailMessageId) {
+    console.error('[SEND_NEW_EMAIL] Gmail API returned no message ID', {
+      responseData: response.data,
+      responseDataType: typeof response.data,
+      responseDataString: JSON.stringify(response.data, null, 2),
+      responseDataKeys: Object.keys(response.data || {}),
+      to: params.to,
+      subject: params.subject,
+    })
+    throw new Error('Gmail API returned no message ID. Email may not have been sent. Check server logs for Gmail API response details.')
+  }
+  
   return {
-    gmailMessageId: response.data.id || '',
-    threadId: response.data.threadId || '',
+    gmailMessageId,
+    threadId: threadId || '',
   }
 }
 

@@ -546,8 +546,16 @@ export async function POST(request: NextRequest) {
         // [SEND] gmail result - minimal debug log
         console.log('[SEND] gmail result', { gmailMessageId, threadId })
       }
-    } else if (!isForced) {
-      // No inbox search and not forced, send new email
+    } else {
+      // This covers:
+      // 1. forceSend=true with intent='initial' (not 'followup') - send new email directly
+      // 2. !isForced and !runInboxSearch - send new email without search
+      
+      console.log('[SEND_ROUTE] sending new email (forceSend/initial or no search)', {
+        intent,
+        isForced,
+        runInboxSearch,
+      })
       
       // Demo mode handling:
       // - If DEMO_MODE === 'true': redirect TO to supplierbart@gmail.com
@@ -556,7 +564,7 @@ export async function POST(request: NextRequest) {
       const actualTo = isDemoMode ? DEMO_SUPPLIER_EMAIL : supplierEmail
       const bcc = DEMO_SUPPLIER_EMAIL // Always BCC for safety
       
-      console.log('[SEND_ROUTE] about to call gmail (no inbox search)', {
+      console.log('[SEND_ROUTE] about to call gmail (forceSend/initial or no search)', {
         displayTo: supplierEmail,
         actualTo,
         bcc,
@@ -569,12 +577,12 @@ export async function POST(request: NextRequest) {
         bcc,
       })
       
-      console.log('[SEND_ROUTE] gmail response (no search)', {
+      console.log('[SEND_ROUTE] gmail response (forceSend/initial or no search)', {
         id: sendResult.gmailMessageId,
         threadId: sendResult.threadId,
       })
       
-      // [SEND] Log B: After Gmail send returns (no search)
+      // [SEND] Log B: After Gmail send returns
       console.info('[SEND] gmail send returned', {
         caseId,
         gmailMessageId: sendResult.gmailMessageId,
@@ -712,6 +720,27 @@ export async function POST(request: NextRequest) {
           { status: 500 }
         )
       }
+    }
+    
+    // Validate that email was actually sent if we attempted to send
+    if (action === 'SEND_NEW' && !gmailMessageId) {
+      console.error('[SEND_ROUTE] Email send attempted but no gmailMessageId returned', {
+        caseId,
+        action,
+        supplierEmail,
+        gmailMessageId,
+        threadId,
+      })
+      // Check server logs for [SEND_NEW_EMAIL] entries to see what Gmail actually returned
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'Email send failed: Gmail API did not return a message ID. The email may not have been sent. Check server console logs for [SEND_NEW_EMAIL] entries to see Gmail API response.',
+          action,
+          details: 'Check server console for detailed Gmail API response logs',
+        },
+        { status: 500 }
+      )
     }
     
     // Normalize action: if we actually sent, use 'sent'

@@ -1,9 +1,15 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, Loader2, Bot, User, AlertCircle, Sparkles } from 'lucide-react'
+import { Send, Loader2, User, AlertCircle, Sparkles, Copy, Check } from 'lucide-react'
 import { useAckChat, AckMessage } from './AcknowledgementChatProvider'
 import { useAgentState } from './AgentStateContext'
+
+type EmailDraftState = 'idle' | 'editing' | 'sent'
+type EmailDraft = { to: string; subject: string; body: string; threadId?: string }
+
+const __DEBUG_INGEST = 'http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56'
+const __DEBUG_SESSION = 'debug-session'
 
 interface AgentResult {
   caseId: string
@@ -96,11 +102,64 @@ export function AgentWorkspace({
   const { setCurrentTask } = agentState
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const lastAgentResultRef = useRef<AgentResult | null>(null)
   const [customEmailInput, setCustomEmailInput] = useState('')
   const [showCustomEmailInput, setShowCustomEmailInput] = useState(false)
   const [isSavingEmail, setIsSavingEmail] = useState(false)
+  const [isSendingDraft, setIsSendingDraft] = useState(false)
+
+  // Email editor state machine:
+  // - idle|sent -> editing when a draft is created (mount editor)
+  // - editing -> sent after successful send (unmount editor by clearing draft)
+  // - any -> idle on case change / reset
+  const [emailDraftState, setEmailDraftState] = useState<EmailDraftState>('idle')
+  const [emailDraft, setEmailDraft] = useState<EmailDraft | null>(null)
+  const prevEmailUiRef = useRef<{ state: EmailDraftState; hasDraft: boolean } | null>(null)
+  const justSentEmailRef = useRef<boolean>(false) // Guard to prevent remounting editor immediately after send
+
+  // TEMP DEBUG: invariant guard (should never hold a draft when not editing)
+  useEffect(() => {
+    if (emailDraftState !== 'editing' && emailDraft !== null) {
+      console.error('Invariant violation', { emailDraftState, emailDraft })
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H2',location:'AgentWorkspace.tsx:116-121',message:'Invariant violation (draft exists while not editing)',data:{emailDraftState,hasDraft:!!emailDraft,ua:typeof navigator!=='undefined'?navigator.userAgent:null,origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+  }, [emailDraftState, emailDraft])
+
+  // TEMP DEBUG: trace email editor state transitions
+  useEffect(() => {
+    const next = { state: emailDraftState, hasDraft: !!emailDraft }
+    const prev = prevEmailUiRef.current
+    if (!prev || prev.state !== next.state || prev.hasDraft !== next.hasDraft) {
+      prevEmailUiRef.current = next
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H6',location:'AgentWorkspace.tsx:122-140',message:'email editor state changed',data:{prev,next,origin:typeof window!=='undefined'?window.location.origin:null,ua:typeof navigator!=='undefined'?navigator.userAgent:null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+  }, [emailDraftState, emailDraft])
+
+  // TEMP DEBUG: verify whether editor DOM still exists after unmount
+  useEffect(() => {
+    const canQuery = typeof document !== 'undefined'
+    const subjectInputs = canQuery ? document.querySelectorAll('input[placeholder="Email subject"]').length : null
+    const bodyTextareas = canQuery ? document.querySelectorAll('textarea[placeholder="Email body"]').length : null
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H9',location:'AgentWorkspace.tsx:dom-check',message:'editor DOM presence check',data:{emailDraftState,hasDraft:!!emailDraft,subjectInputs,bodyTextareas,origin:typeof window!=='undefined'?window.location.origin:null,ua:typeof navigator!=='undefined'?navigator.userAgent:null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [emailDraftState, emailDraft])
+
+  // TEMP DEBUG: single entry point for editor mounts
+  const enterEditing = useCallback((draft: EmailDraft) => {
+    console.trace('Editor mounted')
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H1',location:'AgentWorkspace.tsx:123-128',message:'enterEditing called (mount editor)',data:{draftState:emailDraftState,hasDraft:!!emailDraft,ua:typeof navigator!=='undefined'?navigator.userAgent:null,origin:typeof window!=='undefined'?window.location.origin:null,stack:(new Error('enterEditing')).stack},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    setEmailDraft(draft)
+    setEmailDraftState('editing')
+  }, [])
 
   // Sync caseId with chat provider
   // FIXED: Don't run any side effects when caseId is null
@@ -113,6 +172,13 @@ export function AgentWorkspace({
     setCaseId(caseId)
     // Clear last agent result when case changes
     lastAgentResultRef.current = null
+    // Reset temporary email editor UI when case changes
+    setEmailDraftState('idle')
+    setEmailDraft(null)
+    justSentEmailRef.current = false // Clear guard on case change
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H3',location:'AgentWorkspace.tsx:130-146',message:'caseId sync effect ran',data:{caseIdSuffix:caseId.slice(-6),poNumber, lineId, origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     // Reset task when case changes
     setCurrentTask(poNumber || '', lineId || '')
   }, [caseId, setCaseId, poNumber, lineId, setCurrentTask])
@@ -187,43 +253,87 @@ export function AgentWorkspace({
   }, [caseId, addMessage])
 
   // Send drafted email
-  const sendEmail = useCallback(async (): Promise<string> => {
-    const draft = lastAgentResultRef.current?.drafted_email
-    if (!draft) {
-      return '❌ No draft available. Run the agent first.'
+  const sendEmail = useCallback(async (draft: EmailDraft): Promise<void> => {
+    if (!caseId) {
+      throw new Error('No case selected.')
     }
 
-    if (!caseId) {
-      return '❌ No case selected.'
-    }
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT3',location:'AgentWorkspace.tsx:sendEmail',message:'sendEmail called with draft values',data:{draftSubject:draft.subject,draftBody:draft.body.substring(0,100)+'...',draftTo:draft.to,willSendSubject:draft.subject,willSendBody:draft.body.substring(0,100)+'...'},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
 
     onRunningChange(true)
 
     try {
+      // Use supplierEmail prop as fallback, then demo email if both are missing
+      const DEMO_SUPPLIER_EMAIL = 'supplierbart@gmail.com'
+      const emailTo = draft.to || supplierEmail || DEMO_SUPPLIER_EMAIL
+      
+      // Include all required fields for send route validation
+      // The route can look these up from case if missing, but including them is more reliable
+      const requestBody = {
+        caseId,
+        poNumber: poNumber || undefined, // Include if available
+        lineId: lineId || undefined, // Include if available
+        supplierEmail: emailTo,
+        missingFields: [], // Empty array is valid - route will use case's missingFields if needed
+        subject: draft.subject,
+        body: draft.body,
+        threadId: draft.threadId,
+        forceSend: true,
+        intent: draft.threadId ? 'followup' : 'initial',
+      }
+      
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT4',location:'AgentWorkspace.tsx:sendEmail',message:'API request body being sent',data:{requestSubject:requestBody.subject,requestBody:requestBody.body.substring(0,100)+'...',requestTo:requestBody.supplierEmail},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      
       const response = await fetch('/api/confirmations/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          caseId,
-          subject: draft.subject,
-          body: draft.body,
-          threadId: draft.threadId || lastAgentResultRef.current?.evidence_summary?.thread_id,
-          supplierEmail: draft.to,
-          forceSend: true,
-          intent: draft.threadId ? 'followup' : 'initial',
-        }),
+        body: JSON.stringify(requestBody),
       })
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error || `Send failed: ${response.status}`)
+        // #region agent log
+        fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'SEND_ERROR',location:'AgentWorkspace.tsx:sendEmail',message:'API send failed',data:{status:response.status,error:errorData.error||'Unknown error',supplierEmail:emailTo,errorData,fullError:JSON.stringify(errorData)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        const errorMessage = errorData.error || errorData.message || `Send failed: ${response.status}`
+        const errorDetails = errorData.details ? ` Details: ${errorData.details}` : ''
+        console.error('[SEND_EMAIL] API error:', { 
+          status: response.status, 
+          error: errorData,
+          errorMessage,
+          errorDetails,
+          fullErrorData: JSON.stringify(errorData, null, 2)
+        })
+        throw new Error(`${errorMessage}${errorDetails}`)
       }
 
-      const result = await response.json()
+      const responseData = await response.json().catch(() => ({}))
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'SEND_SUCCESS',location:'AgentWorkspace.tsx:sendEmail',message:'API send succeeded',data:{responseData,requestedTo:emailTo,gmailMessageId:responseData.gmailMessageId,threadId:responseData.threadId,action:responseData.action},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      
+      // Log if email was actually sent
+      if (!responseData.gmailMessageId) {
+        console.warn('[SEND_EMAIL] API returned success but no gmailMessageId:', responseData)
+        // #region agent log
+        fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'SEND_WARNING',location:'AgentWorkspace.tsx:sendEmail',message:'API succeeded but no gmailMessageId',data:{responseData},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      }
+
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT5',location:'AgentWorkspace.tsx:sendEmail',message:'sendEmail API call succeeded',data:{caseId},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       // Re-run orchestrator to refresh state
       setTimeout(async () => {
         try {
+          // #region agent log
+          fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT6',location:'AgentWorkspace.tsx:sendEmail.orchestrator',message:'Starting orchestrator refresh',data:{caseId},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
           const refreshResponse = await fetch('/api/agent/ack-orchestrate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -235,22 +345,115 @@ export function AgentWorkspace({
           })
           if (refreshResponse.ok) {
             const refreshResult = await refreshResponse.json()
+            // #region agent log
+            fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT7',location:'AgentWorkspace.tsx:sendEmail.orchestrator',message:'Orchestrator refresh completed',data:{hasDraft:!!refreshResult.drafted_email,decisionAction:refreshResult.decision?.action_type},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
             lastAgentResultRef.current = refreshResult
             onAgentResult(refreshResult)
           }
         } catch (e) {
+          // #region agent log
+          fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT8',location:'AgentWorkspace.tsx:sendEmail.orchestrator',message:'Orchestrator refresh error',data:{error:e instanceof Error?e.message:String(e)},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
           console.error('Failed to refresh agent state after send:', e)
         }
       }, 500)
-
-      return `✅ **Email sent!**\n\nTo: ${draft.to}\nSubject: "${draft.subject}"\n\nMessage ID: \`${result.gmailMessageId || result.messageId || 'N/A'}\``
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-      return `❌ **Send failed**: ${errorMessage}`
+      throw new Error(errorMessage)
     } finally {
       onRunningChange(false)
     }
   }, [caseId, onAgentResult, onRunningChange])
+
+  const handleSendDraft = useCallback(async (subject: string, body: string): Promise<void> => {
+    if (!emailDraft) return
+    const nextDraft: EmailDraft = { ...emailDraft, subject, body }
+
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT2',location:'AgentWorkspace.tsx:handleSendDraft',message:'handleSendDraft received edited values',data:{receivedSubject:subject,receivedBody:body,emailDraftSubject:emailDraft.subject,emailDraftBody:emailDraft.body,nextDraftSubject:nextDraft.subject,nextDraftBody:nextDraft.body},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+
+    setIsSendingDraft(true)
+    try {
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H7',location:'AgentWorkspace.tsx:262-293',message:'handleSendDraft start',data:{emailDraftState,hasDraft:!!emailDraft,origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      await sendEmail(nextDraft)
+
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT9',location:'AgentWorkspace.tsx:handleSendDraft',message:'sendEmail completed, about to unmount editor',data:{emailDraftState,hasDraft:!!emailDraft},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+
+      // editing -> sent (unmount editor by clearing draft immediately)
+      setEmailDraftState('sent')
+      setEmailDraft(null)
+      justSentEmailRef.current = true // Set guard to prevent remounting from orchestrator refresh
+      
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT10',location:'AgentWorkspace.tsx:handleSendDraft',message:'Editor state set to sent, draft cleared',data:{},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      
+      // Clear guard after a delay (orchestrator refresh happens ~500ms later)
+      setTimeout(() => {
+        justSentEmailRef.current = false
+      }, 2000)
+
+      // Force aggressive repaint in Electron webview to clear stale paint artifacts
+      if (typeof window !== 'undefined') {
+        // #region agent log
+        fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H13',location:'AgentWorkspace.tsx:repaint-trigger-handleSend',message:'repaint trigger executing (handleSendDraft)',data:{hasMessagesEnd:!!messagesEndRef.current,hasMessagesContainer:!!messagesContainerRef.current,origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        
+        // Multiple repaint techniques for Electron webview
+        requestAnimationFrame(() => {
+          const container = messagesContainerRef.current
+          const endMarker = messagesEndRef.current
+          
+          if (container) {
+            // Technique 1: Force layout recalculation
+            void container.offsetHeight
+            // Technique 2: Micro-scroll to trigger repaint
+            const scrollTop = container.scrollTop
+            container.scrollTop = scrollTop + 0.1
+            requestAnimationFrame(() => {
+              container.scrollTop = scrollTop
+            })
+          }
+          
+          if (endMarker) {
+            void endMarker.offsetHeight
+          }
+        })
+      }
+
+      // Keep ref for logging, but never render editor from it
+      if (lastAgentResultRef.current) {
+        lastAgentResultRef.current.drafted_email = undefined
+      }
+
+      if (onCaseUpdated) onCaseUpdated()
+
+      addMessage({
+        role: 'assistant',
+        content: nextDraft.subject
+          ? `Email sent to supplier\n\nSubject: "${nextDraft.subject}"`
+          : 'Email sent to supplier',
+      })
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H7',location:'AgentWorkspace.tsx:262-293',message:'handleSendDraft success -> requested unmount',data:{origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error'
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'SEND_CATCH',location:'AgentWorkspace.tsx:handleSendDraft',message:'handleSendDraft caught error',data:{error:msg,errorStack:err instanceof Error?err.stack:undefined},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      console.error('[SEND_EMAIL] Error in handleSendDraft:', err)
+      addMessage({ role: 'assistant', content: `❌ Send failed: ${msg}` })
+    } finally {
+      setIsSendingDraft(false)
+    }
+  }, [addMessage, emailDraft, onCaseUpdated, sendEmail])
 
   // Save supplier email and re-run orchestrator
   const saveSupplierEmail = useCallback(async (email: string): Promise<string> => {
@@ -302,14 +505,12 @@ export function AgentWorkspace({
               lastAgentResultRef.current = refreshResult
               onAgentResult(refreshResult)
               
-              // Add message showing orchestrator result
+              // Add message showing orchestrator result (skip draft mention - inline editor is the UI for drafts)
               const { decision } = refreshResult
               let responseText = `**Agent completed** (${decision.action_type})\n\n`
-              responseText += `${decision.reason}\n\n`
+              responseText += `${decision.reason}`
               
-              if (refreshResult.drafted_email) {
-                responseText += `📝 **Draft ready**: "${refreshResult.drafted_email.subject}"\n`
-              }
+              // LEGACY REMOVED: Do not mention "Draft ready" in text - inline editor card is the UI for drafts
               
               addMessage({
                 role: 'assistant',
@@ -457,6 +658,9 @@ export function AgentWorkspace({
       return
     }
 
+    // Local view of state transitions within this request (React state updates are async).
+    let draftStateAtRequest: EmailDraftState = emailDraftState
+
     // Add user message to chat immediately
     addMessage({
       role: 'user',
@@ -504,21 +708,16 @@ export function AgentWorkspace({
       const result = await response.json()
       
       const assistantResponse = result.response || result.message || 'I received your message but had trouble generating a response.'
-      
-      // Add assistant response to chat
-        addMessage({
-          role: 'assistant',
-        content: assistantResponse,
-      })
-
-      // Update conversation history state
-      setConversationHistory(prev => [...prev, { 
-        role: 'assistant', 
-        content: assistantResponse
-      }])
 
       // If tools were used, update task steps and agent result
       if (result.tool_calls && result.tool_calls.length > 0) {
+        // NOTE: This is intentionally the ONLY place we transition the email editor.
+        // Legacy path removed: we do NOT render the editor from refs, messages, or tool results directly.
+        let draftStateDuringThisResponse: EmailDraftState = draftStateAtRequest
+        let shouldUseCompactSentMessage = false
+        let shouldSkipAssistantResponse = false // Skip verbose response when inline editor mounts
+        let sentSubject: string | null = emailDraft?.subject ?? null
+
         // Update task steps based on tool calls
         for (const toolCall of result.tool_calls) {
           const tool = toolCall.tool
@@ -575,6 +774,57 @@ export function AgentWorkspace({
               label: 'Sending email to supplier',
               status: toolResult?.status === 'sent' ? 'completed' : toolResult?.status === 'error' ? 'failed' : 'in_progress',
             })
+
+            // Treat any non-error send_email tool result as success, and hard-unmount editor.
+            // This is intentionally strict: after a successful send, the editor must be impossible to keep alive.
+            const sendSucceeded = !!toolResult?.status && toolResult.status !== 'error'
+            if (sendSucceeded) {
+              // editing -> sent (guaranteed editor unmount)
+              draftStateDuringThisResponse = 'sent'
+              shouldUseCompactSentMessage = true
+
+              console.trace('Editor unmounted (send_email)')
+              // #region agent log
+              fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H4',location:'AgentWorkspace.tsx:622-648',message:'send_email tool success -> unmount editor',data:{toolStatus:toolResult?.status,emailDraftStateBefore:emailDraftState,hasDraftBefore:!!emailDraft,origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+              // #endregion
+              setEmailDraftState('sent')
+              setEmailDraft(null)
+              
+              // Force aggressive repaint in Electron webview to clear stale paint artifacts
+              if (typeof window !== 'undefined') {
+                // #region agent log
+                fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H13',location:'AgentWorkspace.tsx:repaint-trigger',message:'repaint trigger executing',data:{hasMessagesEnd:!!messagesEndRef.current,hasMessagesContainer:!!messagesContainerRef.current,origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+                
+                // Multiple repaint techniques for Electron webview
+                requestAnimationFrame(() => {
+                  const container = messagesContainerRef.current
+                  const endMarker = messagesEndRef.current
+                  
+                  if (container) {
+                    // Technique 1: Force layout recalculation
+                    void container.offsetHeight
+                    // Technique 2: Micro-scroll to trigger repaint
+                    const scrollTop = container.scrollTop
+                    container.scrollTop = scrollTop + 0.1
+                    requestAnimationFrame(() => {
+                      container.scrollTop = scrollTop
+                    })
+                  }
+                  
+                  if (endMarker) {
+                    void endMarker.offsetHeight
+                  }
+                })
+              }
+
+              // Legacy cleanup: ensure no other UI can resurrect this draft from refs
+              if (lastAgentResultRef.current) {
+                lastAgentResultRef.current.drafted_email = undefined
+              }
+
+              if (onCaseUpdated) onCaseUpdated()
+            }
           }
         }
         
@@ -606,11 +856,21 @@ export function AgentWorkspace({
         const draftResult = result.tool_calls.find((tc: any) => tc.tool === 'draft_email')
         if (draftResult?.result?.status === 'draft_ready') {
           const draft = draftResult.result
+          // Use supplierEmail prop as fallback, then demo email if both are missing
+          const DEMO_SUPPLIER_EMAIL = 'supplierbart@gmail.com'
+          const draftTo = draft.to || supplierEmail || DEMO_SUPPLIER_EMAIL
+          const nextDraft: EmailDraft = {
+            to: draftTo,
+            subject: draft.subject,
+            body: draft.body,
+            threadId: draft.thread_id,
+          }
+
           if (lastAgentResultRef.current) {
             lastAgentResultRef.current.drafted_email = {
               subject: draft.subject,
               body: draft.body,
-              to: draft.to,
+              to: draftTo,
               threadId: draft.thread_id,
               demoModeActive: draft.demo_mode,
               demoModeMessage: draft.demo_warning,
@@ -627,7 +887,7 @@ export function AgentWorkspace({
               drafted_email: {
                 subject: draft.subject,
                 body: draft.body,
-                to: draft.to,
+                to: draftTo,
                 threadId: draft.thread_id,
                 demoModeActive: draft.demo_mode,
                 demoModeMessage: draft.demo_warning,
@@ -636,7 +896,53 @@ export function AgentWorkspace({
             }
           }
           onAgentResult(lastAgentResultRef.current)
+
+          // Only mount if we're not already editing (single editor instance).
+          // Note: sent -> editing is allowed when a NEW draft is created, BUT NOT immediately after we just sent an email.
+          if (draftStateDuringThisResponse !== 'editing' && !justSentEmailRef.current) {
+            // #region agent log
+            fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H5',location:'AgentWorkspace.tsx:676-723',message:'draft_email tool ready -> attempting enterEditing',data:{draftStateDuringThisResponse,emailDraftState,hasDraft:!!emailDraft,justSentEmail:justSentEmailRef.current,origin:typeof window!=='undefined'?window.location.origin:null},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
+            enterEditing(nextDraft)
+            draftStateDuringThisResponse = 'editing'
+            // Skip verbose assistant response - inline editor card is self-explanatory
+            shouldSkipAssistantResponse = true
+          } else if (justSentEmailRef.current) {
+            // #region agent log
+            fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT11',location:'AgentWorkspace.tsx:draft_email',message:'Blocked remounting editor - just sent email',data:{draftStateDuringThisResponse,emailDraftState},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
+          }
         }
+
+        // Add assistant response to chat (optionally compacted for send confirmation, or skipped if inline editor mounted)
+        if (!shouldSkipAssistantResponse) {
+          const finalAssistantResponse = shouldUseCompactSentMessage
+            ? sentSubject
+              ? `Email sent to supplier\n\nSubject: "${sentSubject}"`
+              : 'Email sent to supplier'
+            : assistantResponse
+
+          addMessage({
+            role: 'assistant',
+            content: finalAssistantResponse,
+          })
+
+          setConversationHistory(prev => [
+            ...prev,
+            { role: 'assistant', content: finalAssistantResponse },
+          ])
+        }
+      } else {
+        // No tool calls: just add assistant response to chat
+        addMessage({
+          role: 'assistant',
+          content: assistantResponse,
+        })
+
+        setConversationHistory(prev => [
+          ...prev,
+          { role: 'assistant', content: assistantResponse },
+        ])
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -649,7 +955,18 @@ export function AgentWorkspace({
       setIsLoading(false)
       onRunningChange(false)
     }
-  }, [caseId, conversationHistory, addMessage, setIsLoading, onRunningChange, onAgentResult])
+  }, [
+    caseId,
+    conversationHistory,
+    addMessage,
+    setIsLoading,
+    onRunningChange,
+    onAgentResult,
+    onCaseUpdated,
+    enterEditing,
+    emailDraftState,
+    emailDraft?.subject,
+  ])
 
   // Handle user input - everything is natural language now
   const handleUserInput = useCallback(async (text: string): Promise<void> => {
@@ -723,7 +1040,7 @@ export function AgentWorkspace({
       <div className="flex-shrink-0 px-6 py-3 bg-surface">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-primary-deep/10 flex items-center justify-center">
-            <Bot className="w-4 h-4 text-primary-deep" />
+            <Sparkles className="w-4 h-4 text-primary-deep" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-text">
@@ -737,7 +1054,7 @@ export function AgentWorkspace({
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-6 py-4">
         {messages.length === 0 ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center">
@@ -751,6 +1068,19 @@ export function AgentWorkspace({
             {messages.map((msg) => (
               <MessageBubble key={msg.id} message={msg} />
             ))}
+
+            {/* Temporary draft email editor: only renders while editing */}
+            {/* LEGACY REMOVED: do not render from `lastAgentResultRef.current?.drafted_email` (single render path only) */}
+            {emailDraftState === 'editing' && emailDraft && (
+              <EmailDraftCard
+                key={`${caseId || 'no-case'}:${emailDraft.to}:${emailDraft.subject}`}
+                initialSubject={emailDraft.subject}
+                initialBody={emailDraft.body}
+                to={emailDraft.to}
+                onSend={handleSendDraft}
+                isSending={isSendingDraft}
+              />
+            )}
             
             {/* Missing supplier email prompt */}
             {lastAgentResultRef.current?.decision?.action_type === 'NEEDS_HUMAN' &&
@@ -842,6 +1172,136 @@ export function AgentWorkspace({
   )
 }
 
+interface EmailDraftCardProps {
+  initialSubject: string
+  initialBody: string
+  to: string
+  onSend: (subject: string, body: string) => Promise<void>
+  isSending: boolean
+}
+
+function EmailDraftCard({ initialSubject, initialBody, to, onSend, isSending }: EmailDraftCardProps) {
+  const [subject, setSubject] = useState(initialSubject)
+  const [body, setBody] = useState(initialBody)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H8',location:'AgentWorkspace.tsx:EmailDraftCard',message:'EmailDraftCard mounted',data:{origin:typeof window!=='undefined'?window.location.origin:null,ua:typeof navigator!=='undefined'?navigator.userAgent:null,isSending},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return () => {
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'divergence-pre',hypothesisId:'H8',location:'AgentWorkspace.tsx:EmailDraftCard',message:'EmailDraftCard unmounted',data:{origin:typeof window!=='undefined'?window.location.origin:null,ua:typeof navigator!=='undefined'?navigator.userAgent:null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+  }, [isSending])
+  
+  // Log when isSending changes
+  useEffect(() => {
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT_SEND_STATE',location:'AgentWorkspace.tsx:EmailDraftCard.isSending',message:'isSending state changed',data:{isSending},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [isSending])
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(`To: ${to}\nSubject: ${subject}\n\n${body}`)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleSendClick = async () => {
+    // #region agent log
+    fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT1',location:'AgentWorkspace.tsx:EmailDraftCard.handleSendClick',message:'EmailDraftCard handleSendClick called',data:{subject,body,initialSubject,initialBody,subjectChanged:subject!==initialSubject,bodyChanged:body!==initialBody,isSending},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    try {
+      await onSend(subject, body)
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT1B',location:'AgentWorkspace.tsx:EmailDraftCard.handleSendClick',message:'EmailDraftCard onSend completed',data:{},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } catch (err) {
+      // #region agent log
+      fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT1C',location:'AgentWorkspace.tsx:EmailDraftCard.handleSendClick',message:'EmailDraftCard onSend error',data:{error:err instanceof Error?err.message:String(err)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      throw err
+    }
+  }
+
+  return (
+    <div className="bg-surface border border-border/70 rounded-2xl shadow-soft overflow-hidden my-4 max-w-3xl">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/70">
+        <span className="text-sm text-text-muted">Email</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopy}
+            className="p-2 hover:bg-surface-2/50 rounded-lg transition-colors"
+            title="Copy to clipboard"
+            type="button"
+          >
+            {copied ? (
+              <Check className="w-4 h-4 text-success" />
+            ) : (
+              <Copy className="w-4 h-4 text-text-muted" />
+            )}
+          </button>
+          <button
+            onClick={(e) => {
+              // #region agent log
+              fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT0',location:'AgentWorkspace.tsx:EmailDraftCard.button.onClick',message:'Send button clicked',data:{isSending,disabled:isSending},timestamp:Date.now()})}).catch(()=>{});
+              // #endregion
+              if (!isSending) {
+                handleSendClick().catch((err) => {
+                  // #region agent log
+                  fetch(__DEBUG_INGEST,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:__DEBUG_SESSION,runId:'edit-trace',hypothesisId:'EDIT0B',location:'AgentWorkspace.tsx:EmailDraftCard.button.onClick',message:'Send button handler error',data:{error:err instanceof Error?err.message:String(err)},timestamp:Date.now()})}).catch(()=>{});
+                  // #endregion
+                  console.error('[EmailDraftCard] Send failed:', err)
+                })
+              }
+            }}
+            disabled={isSending}
+            className="p-2 hover:bg-surface-2/50 rounded-lg transition-colors disabled:opacity-50"
+            title="Send email"
+            type="button"
+          >
+            {isSending ? (
+              <Loader2 className="w-4 h-4 text-text-muted animate-spin" />
+            ) : (
+              <Send className="w-4 h-4 text-text-muted" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* To field (read-only) */}
+      <div className="px-4 py-2 border-b border-border/70 text-xs text-text-subtle">
+        To: {to}
+      </div>
+
+      {/* Subject */}
+      <div className="px-4 py-3 border-b border-border/70">
+        <div className="text-xs text-text-subtle mb-1">Subject</div>
+        <input
+          type="text"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          className="w-full bg-transparent text-text text-sm focus:outline-none placeholder:text-text-subtle"
+          placeholder="Email subject"
+        />
+      </div>
+
+      {/* Body */}
+      <div className="px-4 py-3">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          className="w-full bg-transparent text-text text-sm focus:outline-none placeholder:text-text-subtle resize-none min-h-[200px] leading-relaxed font-mono"
+          placeholder="Email body"
+        />
+      </div>
+    </div>
+  )
+}
+
 // Message bubble component
 function MessageBubble({ message }: { message: AckMessage }) {
   const isUser = message.role === 'user'
@@ -858,7 +1318,7 @@ function MessageBubble({ message }: { message: AckMessage }) {
         ) : isSystem ? (
           <AlertCircle className="w-4 h-4 text-warning" />
         ) : (
-          <Bot className="w-4 h-4 text-primary-deep" />
+          <Sparkles className="w-4 h-4 text-primary-deep" />
         )}
       </div>
 
@@ -910,7 +1370,7 @@ function MissingSupplierEmailPrompt({
   return (
     <div className="flex items-start gap-3">
       <div className="w-7 h-7 rounded-lg bg-primary-deep/10 flex items-center justify-center flex-shrink-0">
-        <Bot className="w-4 h-4 text-primary-deep" />
+        <Sparkles className="w-4 h-4 text-primary-deep" />
       </div>
       <div className="flex-1">
         <div className="inline-block max-w-[90%] px-4 py-2.5 rounded-xl bg-surface-2/70 text-text">

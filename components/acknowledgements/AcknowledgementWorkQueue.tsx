@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useWorkspace } from '@/components/WorkspaceProvider'
 import { UnconfirmedPO, getUnconfirmedPOs } from '@/src/lib/unconfirmedPOs'
 import { ConfirmationRecord } from '@/src/lib/confirmedPOs'
+import { Search, X } from 'lucide-react'
 
 interface AcknowledgementWorkQueueProps {
   activeCaseId: string | null
@@ -99,6 +100,64 @@ export function AcknowledgementWorkQueue({
   const [unconfirmedPOs, setUnconfirmedPOs] = useState<UnconfirmedPO[]>([])
   const [confirmationRecords, setConfirmationRecords] = useState<Map<string, ConfirmationRecord>>(new Map())
   const [loading, setLoading] = useState(true)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [selectedIndex, setSelectedIndex] = useState(0)
+
+  const filteredPOs = useMemo(() => {
+    if (!searchTerm.trim()) return unconfirmedPOs
+
+    const term = searchTerm.toLowerCase()
+    return unconfirmedPOs.filter(po =>
+      po.po_id.toLowerCase().includes(term) ||
+      (po.supplier_name || '').toLowerCase().includes(term)
+    )
+  }, [unconfirmedPOs, searchTerm])
+
+  // Keep selectedIndex in bounds when filtering changes (primitive dep only)
+  useEffect(() => {
+    if (filteredPOs.length === 0) {
+      setSelectedIndex(0)
+      return
+    }
+    setSelectedIndex(prev => Math.min(prev, filteredPOs.length - 1))
+  }, [filteredPOs.length])
+
+  // When not searching, keep keyboard selection aligned with active case if present.
+  const activeIndex = useMemo(() => {
+    if (!activeCaseId) return -1
+    return filteredPOs.findIndex(po => `${po.po_id}-${po.line_id || ''}` === activeCaseId)
+  }, [filteredPOs, activeCaseId])
+
+  useEffect(() => {
+    if (searchTerm.trim()) return
+    if (activeIndex >= 0) setSelectedIndex(activeIndex)
+  }, [activeIndex, searchTerm])
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (filteredPOs.length === 0) return
+
+    switch (e.key) {
+      case 'ArrowDown': {
+        e.preventDefault()
+        setSelectedIndex(prev => Math.min(prev + 1, filteredPOs.length - 1))
+        break
+      }
+      case 'ArrowUp': {
+        e.preventDefault()
+        setSelectedIndex(prev => Math.max(prev - 1, 0))
+        break
+      }
+      case 'Enter': {
+        e.preventDefault()
+        const selectedPO = filteredPOs[selectedIndex]
+        if (selectedPO) {
+          const key = `${selectedPO.po_id}-${selectedPO.line_id || ''}`
+          onSelectCase(key, selectedPO)
+        }
+        break
+      }
+    }
+  }, [filteredPOs, selectedIndex, onSelectCase])
 
   // Fetch confirmation records from database
   const fetchConfirmationRecords = useCallback(async () => {
@@ -226,24 +285,64 @@ export function AcknowledgementWorkQueue({
 
       {/* Scrollable list */}
       <div className="flex-1 overflow-y-auto">
+        {/* Search (sticky) */}
+        <div className="sticky top-0 z-10 bg-surface p-2 border-b border-border/50">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+            <input
+              type="text"
+              placeholder="Search PO or supplier..."
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value)
+                setSelectedIndex(0)
+              }}
+              onKeyDown={handleKeyDown}
+              className="w-full pl-9 pr-9 py-2 text-sm bg-surface-2 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary-deep/50 focus:border-primary-deep/50"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => {
+                  setSearchTerm('')
+                  setSelectedIndex(0)
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text"
+                aria-label="Clear search"
+                type="button"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {searchTerm.trim() && (
+          <div className="px-4 py-2 text-xs text-text-muted border-b border-border/30">
+            {filteredPOs.length} result{filteredPOs.length !== 1 ? 's' : ''}
+          </div>
+        )}
+
         {loading ? (
           <div className="px-4 py-8 text-center">
             <div className="text-xs text-text-subtle">Loading...</div>
           </div>
-        ) : unconfirmedPOs.length === 0 ? (
+        ) : filteredPOs.length === 0 ? (
           <div className="px-4 py-8 text-center">
-            <div className="text-xs text-text-subtle">No unconfirmed POs</div>
+            <div className="text-xs text-text-subtle">
+              {searchTerm.trim() ? 'No matches' : 'No unconfirmed POs'}
+            </div>
             <p className="text-[10px] text-text-subtle/70 mt-1">
-              Upload PO data in Drive to get started
+              {searchTerm.trim() ? 'Try a different search term' : 'Upload PO data in Drive to get started'}
             </p>
           </div>
         ) : (
           <div className="divide-y divide-border/30">
-            {unconfirmedPOs.map((po) => {
+            {filteredPOs.map((po, index) => {
               const key = `${po.po_id}-${po.line_id || ''}`
               const record = confirmationRecords.get(key)
               const needTokens = deriveNeedTokens(record)
               const isSelected = activeCaseId === key
+              const isKeyboardSelected = index === selectedIndex
               
               // Max 3 tokens, show +N overflow
               const displayTokens = needTokens.slice(0, 3)
@@ -254,11 +353,14 @@ export function AcknowledgementWorkQueue({
                   key={key}
                   onClick={() => {
                     onSelectCase(key, po)
+                    setSelectedIndex(index)
                   }}
                   className={`w-full text-left px-4 py-2 transition-colors ${
                     isSelected
                       ? 'bg-primary-deep/10 border-l-2 border-l-primary-deep'
-                      : 'hover:bg-surface-2/50'
+                      : isKeyboardSelected
+                        ? 'bg-surface-2/70 border-l-2 border-l-border'
+                        : 'hover:bg-surface-2/50'
                   }`}
                 >
                   {/* Row 1: PO + Supplier (inline) */}

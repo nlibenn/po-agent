@@ -8,6 +8,11 @@ export const runtime = 'nodejs'
  * Handle OAuth callback from Google, exchange code for tokens, and store them
  */
 export async function GET(request: NextRequest) {
+  // Mock mode for demo
+  if (process.env.MOCK_GMAIL === 'true') {
+    return NextResponse.redirect(new URL('/acknowledgements', request.url))
+  }
+
   try {
     const searchParams = request.nextUrl.searchParams
     const code = searchParams.get('code')
