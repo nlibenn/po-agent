@@ -9,10 +9,19 @@ export const runtime = 'nodejs'
  * Check Gmail OAuth connection status (does NOT expose tokens)
  */
 export async function GET(request: NextRequest) {
+  // #region agent log
+  debugLog({location:'status/route.ts:11',message:'Status check entry',data:{},hypothesisId:'C'});
+  // #endregion
   try {
     const tokens = await getTokens()
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'status/route.ts:14',message:'Tokens retrieved',data:{hasTokens:!!tokens,hasAccessToken:!!tokens?.access_token},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
 
     if (!tokens || !tokens.access_token) {
+      // #region agent log
+      debugLog({location:'status/route.ts:17',message:'Returning connected:false',data:{},hypothesisId:'C'});
+      // #endregion
       return NextResponse.json({
         connected: false,
       })

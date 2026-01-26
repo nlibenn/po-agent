@@ -11,6 +11,14 @@ import { google } from 'googleapis'
 import { OAuth2Client } from 'google-auth-library'
 import { getTokens, saveTokens } from './tokenStore'
 
+// Debug logging helper - only runs at runtime, not during build
+const debugLog = (data: any) => {
+  if (process.env.NEXT_PHASE === 'phase-production-build' || process.env.NEXT_PHASE === 'phase-export') {
+    return // Skip during build
+  }
+  fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,timestamp:Date.now(),sessionId:'debug-session',runId:'run1'})}).catch(()=>{});
+}
+
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send',
@@ -106,10 +114,22 @@ export function getAuthUrl(): string {
  * Exchange authorization code for tokens
  */
 export async function exchangeCodeForTokens(code: string): Promise<void> {
+  // #region agent log
+  debugLog({location:'client.ts:108',message:'exchangeCodeForTokens entry',data:{hasCode:!!code},hypothesisId:'A'});
+  // #endregion
   const client = getOAuth2Client()
+  // #region agent log
+  debugLog({location:'client.ts:110',message:'Before getToken',data:{},hypothesisId:'A'});
+  // #endregion
   const { tokens } = await client.getToken(code)
+  // #region agent log
+  debugLog({location:'client.ts:112',message:'getToken succeeded',data:{hasAccessToken:!!tokens.access_token,hasRefreshToken:!!tokens.refresh_token,hasExpiry:!!tokens.expiry_date},hypothesisId:'A'});
+  // #endregion
 
   // Save tokens to storage (tokens.expiry_date is already in ms)
+  // #region agent log
+  debugLog({location:'client.ts:115',message:'Before saveTokens',data:{},hypothesisId:'B'});
+  // #endregion
   await saveTokens({
     access_token: tokens.access_token || null,
     refresh_token: tokens.refresh_token || null,
@@ -117,4 +137,7 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
     token_type: tokens.token_type || null,
     expiry_date: tokens.expiry_date || null, // Already in ms
   })
+  // #region agent log
+  debugLog({location:'client.ts:120',message:'saveTokens completed',data:{},hypothesisId:'B'});
+  // #endregion
 }

@@ -11,6 +11,14 @@ import { kv } from '@vercel/kv'
 
 const TOKEN_KEY = 'gmail:tokens:default'
 
+// Debug logging helper - only runs at runtime, not during build
+const debugLog = (data: any) => {
+  if (process.env.NEXT_PHASE === 'phase-production-build' || process.env.NEXT_PHASE === 'phase-export') {
+    return // Skip during build
+  }
+  fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,timestamp:Date.now(),sessionId:'debug-session',runId:'run1'})}).catch(()=>{});
+}
+
 export interface GmailTokens {
   id: string // 'default'
   access_token: string | null
@@ -36,10 +44,16 @@ export interface GmailTokensInput {
  * Preserves existing refresh_token if a new one is not provided.
  */
 export async function saveTokens(tokens: GmailTokensInput): Promise<void> {
+  // #region agent log
+  debugLog({location:'tokenStore.ts:38',message:'saveTokens entry',data:{hasAccessToken:!!tokens.access_token,hasRefreshToken:!!tokens.refresh_token},hypothesisId:'B'});
+  // #endregion
   const now = Date.now()
   
   // Get existing tokens to preserve refresh_token if not provided
   const existing = await getTokens()
+  // #region agent log
+  debugLog({location:'tokenStore.ts:43',message:'Existing tokens retrieved',data:{hasExisting:!!existing},hypothesisId:'B'});
+  // #endregion
   
   // Preserve refresh_token if not provided in input
   const refresh_token = tokens.refresh_token !== undefined 
@@ -57,17 +71,39 @@ export async function saveTokens(tokens: GmailTokensInput): Promise<void> {
     updated_at: now,
   }
   
-  await kv.set(TOKEN_KEY, tokenData)
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'tokenStore.ts:60',message:'Before KV set',data:{hasAccessToken:!!tokenData.access_token,hasRefreshToken:!!tokenData.refresh_token},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
+  try {
+    await kv.set(TOKEN_KEY, tokenData)
+    // #region agent log
+    debugLog({location:'tokenStore.ts:62',message:'KV set succeeded',data:{},hypothesisId:'B'});
+    // #endregion
+  } catch (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'tokenStore.ts:65',message:'KV set failed',data:{errorMessage:error instanceof Error ? error.message : String(error),errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
+    throw error
+  }
 }
 
 /**
  * Get Gmail OAuth tokens
  */
 export async function getTokens(): Promise<GmailTokens | null> {
+  // #region agent log
+  debugLog({location:'tokenStore.ts:66',message:'getTokens entry',data:{},hypothesisId:'C'});
+  // #endregion
   try {
     const tokenData = await kv.get<GmailTokens>(TOKEN_KEY)
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'tokenStore.ts:69',message:'KV get succeeded',data:{hasTokenData:!!tokenData,hasAccessToken:!!tokenData?.access_token},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
     return tokenData || null
   } catch (error) {
+    // #region agent log
+    debugLog({location:'tokenStore.ts:73',message:'KV get failed',data:{errorMessage:error instanceof Error ? error.message : String(error)},hypothesisId:'C'});
+    // #endregion
     console.error('[GMAIL_TOKEN_STORE] Error getting tokens from KV:', error)
     return null
   }

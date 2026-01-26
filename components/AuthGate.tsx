@@ -23,8 +23,14 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const checkAuth = async () => {
+      // #region agent log
+      debugLog({location:'AuthGate.tsx:25',message:'checkAuth entry',data:{pathname},hypothesisId:'C'});
+      // #endregion
       // Check for success parameter from OAuth callback
       const gmailConnected = searchParams?.get('gmail_connected') === '1'
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuthGate.tsx:28',message:'Success param check',data:{gmailConnected},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       
       if (gmailConnected) {
         // OAuth just succeeded - wait a moment for KV write to complete, then check status
@@ -33,8 +39,14 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       }
 
       try {
+        // #region agent log
+        debugLog({location:'AuthGate.tsx:36',message:'Before status fetch',data:{},hypothesisId:'C'});
+        // #endregion
         const response = await fetch('/api/gmail/status')
         const data: GmailStatus = await response.json()
+        // #region agent log
+        debugLog({location:'AuthGate.tsx:38',message:'Status response received',data:{connected:data.connected},hypothesisId:'C'});
+        // #endregion
         
         if (data.connected) {
           setIsAuthenticated(true)
@@ -45,10 +57,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             router.replace(newUrl.pathname + newUrl.search)
           }
         } else {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuthGate.tsx:49',message:'Not connected, redirecting to login',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          // #endregion
           // Not authenticated - redirect to login
           router.replace('/login')
         }
       } catch (error) {
+        // #region agent log
+        debugLog({location:'AuthGate.tsx:52',message:'Status fetch error',data:{errorMessage:error instanceof Error ? error.message : String(error),gmailConnected},hypothesisId:'C'});
+        // #endregion
         console.error('Error checking auth:', error)
         // On error, redirect to login (unless we just got success param)
         if (!gmailConnected) {
