@@ -21,6 +21,12 @@ export async function GET(request: NextRequest) {
   debugLog({location:'status/route.ts:11',message:'Status check entry',data:{},hypothesisId:'C'});
   // #endregion
   try {
+    // During build, return not connected to allow static generation
+    if (process.env.NEXT_PHASE === 'phase-production-build' || process.env.NEXT_PHASE === 'phase-export') {
+      return NextResponse.json({
+        connected: false,
+      })
+    }
     const tokens = await getTokens()
     // #region agent log
     debugLog({location:'status/route.ts:14',message:'Tokens retrieved',data:{hasTokens:!!tokens,hasAccessToken:!!tokens?.access_token},hypothesisId:'C'});
