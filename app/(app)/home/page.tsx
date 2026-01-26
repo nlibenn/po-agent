@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { formatRelativeTime } from '@/src/lib/utils/relativeTime'
 import { getDriveSummary } from '@/src/lib/driveStorage'
@@ -11,7 +12,9 @@ interface GmailStatus {
   scopes?: string[]
 }
 
-export default function HomePage() {
+function HomePageContent() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
   const [gmailStatus, setGmailStatus] = useState<GmailStatus | null>(null)
   const [isCheckingGmail, setIsCheckingGmail] = useState(true)
   const [showComingSoonModal, setShowComingSoonModal] = useState(false)
@@ -22,6 +25,33 @@ export default function HomePage() {
 
   useEffect(() => {
     const checkGmailStatus = async () => {
+      // Check for success parameter from OAuth callback
+      const gmailConnected = searchParams?.get('gmail_connected') === '1'
+      
+      // If we have success param, optimistically set connected state
+      if (gmailConnected) {
+        console.log('[HOME] Detected gmail_connected=1, setting optimistic connected state')
+        setGmailStatus({ connected: true })
+        setIsCheckingGmail(false)
+        
+        // Remove success parameter from URL
+        const newUrl = new URL(window.location.href)
+        newUrl.searchParams.delete('gmail_connected')
+        router.replace(newUrl.pathname + newUrl.search)
+        
+        // Still verify with backend after a short delay
+        setTimeout(async () => {
+          try {
+            const response = await fetch('/api/gmail/status')
+            const data: GmailStatus = await response.json()
+            setGmailStatus(data)
+          } catch (error) {
+            console.error('Error verifying Gmail status:', error)
+          }
+        }, 500)
+        return
+      }
+
       try {
         const response = await fetch('/api/gmail/status')
         const data: GmailStatus = await response.json()
@@ -65,7 +95,7 @@ export default function HomePage() {
       window.removeEventListener('storage', handleStorageChange)
       window.removeEventListener('driveStorageChanged', handleCustomStorageChange)
     }
-  }, [])
+  }, [searchParams, router])
 
   const handleConnectGmail = () => {
     window.location.href = '/api/gmail/auth'
@@ -183,5 +213,17 @@ export default function HomePage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function HomePage() {
+  return (
+    <Suspense fallback={
+      <div className="h-full flex items-center justify-center">
+        <div className="text-text-muted">Loading...</div>
+      </div>
+    }>
+      <HomePageContent />
+    </Suspense>
   )
 }

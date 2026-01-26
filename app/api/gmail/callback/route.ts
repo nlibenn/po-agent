@@ -42,8 +42,8 @@ export async function GET(request: NextRequest) {
 
     console.log('[GMAIL_CALLBACK] Gmail callback succeeded')
 
-    // Redirect to /home after successful authentication
-    return NextResponse.redirect(new URL('/home', request.url))
+    // Redirect to /home with success parameter after successful authentication
+    return NextResponse.redirect(new URL('/home?gmail_connected=1', request.url))
   } catch (error) {
     console.error('[GMAIL_CALLBACK] Full error:', error)
     console.error('[GMAIL_CALLBACK] Error stack:', error instanceof Error ? error.stack : 'No stack trace')

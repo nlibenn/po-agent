@@ -1,13 +1,22 @@
 'use client'
 
-import { useState, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useState, Suspense, useEffect } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { LoginBackdrop } from '@/components/auth/LoginBackdrop'
 
 function LoginContent() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const hasError = searchParams.get('error') === '1'
+  const gmailConnected = searchParams.get('gmail_connected') === '1'
   const [isLoading, setIsLoading] = useState(false)
+
+  // If OAuth succeeded, redirect to home
+  useEffect(() => {
+    if (gmailConnected) {
+      router.replace('/home?gmail_connected=1')
+    }
+  }, [gmailConnected, router])
 
   const handleGoogleSignIn = () => {
     setIsLoading(true)
@@ -41,7 +50,7 @@ function LoginContent() {
             <div className="space-y-4">
               <h2 className="text-3xl font-semibold text-text">Welcome back</h2>
               <p className="text-sm text-text-muted leading-relaxed">
-                Manage purchase orders, track exceptions, and coordinate with suppliers—all in one place.
+                Supplier Confirmation - the painless way.
               </p>
             </div>
           </div>
