@@ -37,7 +37,7 @@ export function getOAuth2Client(): OAuth2Client {
  */
 export async function getAuthenticatedOAuth2Client(): Promise<OAuth2Client> {
   const client = getOAuth2Client()
-  const tokens = getTokens()
+  const tokens = await getTokens()
 
   if (!tokens || !tokens.access_token) {
     throw new Error('Gmail OAuth tokens not found. Please authenticate first via /api/gmail/auth')
@@ -63,7 +63,7 @@ export async function getAuthenticatedOAuth2Client(): Promise<OAuth2Client> {
       const { credentials } = await client.refreshAccessToken()
       
       // Save refreshed tokens (credentials.expiry_date is in ms, so no conversion needed)
-      saveTokens({
+      await saveTokens({
         access_token: credentials.access_token || null,
         refresh_token: credentials.refresh_token || tokens.refresh_token, // Keep existing if not provided
         scope: credentials.scope || tokens.scope || null,
@@ -110,7 +110,7 @@ export async function exchangeCodeForTokens(code: string): Promise<void> {
   const { tokens } = await client.getToken(code)
 
   // Save tokens to storage (tokens.expiry_date is already in ms)
-  saveTokens({
+  await saveTokens({
     access_token: tokens.access_token || null,
     refresh_token: tokens.refresh_token || null,
     scope: tokens.scope || null,

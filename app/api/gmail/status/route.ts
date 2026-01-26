@@ -10,7 +10,7 @@ export const runtime = 'nodejs'
  */
 export async function GET(request: NextRequest) {
   try {
-    const tokens = getTokens()
+    const tokens = await getTokens()
 
     if (!tokens || !tokens.access_token) {
       return NextResponse.json({

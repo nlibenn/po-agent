@@ -1,15 +1,15 @@
 /**
- * Gmail OAuth Token Storage (SQLite)
+ * Gmail OAuth Token Storage (Vercel KV)
  * 
- * This module stores Gmail OAuth tokens in the shared SQLite database.
- * The gmail_tokens table is created automatically by the shared initialization
- * in src/lib/supplier-agent/storage/sqlite.ts via schema.sql.
+ * This module stores Gmail OAuth tokens in Vercel KV (Redis).
+ * Tokens are stored under the key: gmail:tokens:default
  * 
- * All functions call getDb() which guarantees the database and all tables
- * (including gmail_tokens) are initialized before any operations.
+ * All functions are async since KV operations are asynchronous.
  */
 
-import { getDb } from '../supplier-agent/storage/sqlite'
+import { kv } from '@vercel/kv'
+
+const TOKEN_KEY = 'gmail:tokens:default'
 
 export interface GmailTokens {
   id: string // 'default'
@@ -33,91 +33,49 @@ export interface GmailTokensInput {
 /**
  * Save Gmail OAuth tokens
  * 
- * The gmail_tokens table is guaranteed to exist because getDb() ensures
- * all tables from schema.sql are created before any database access.
+ * Preserves existing refresh_token if a new one is not provided.
  */
-export function saveTokens(tokens: GmailTokensInput): void {
-  const db = getDb()
+export async function saveTokens(tokens: GmailTokensInput): Promise<void> {
   const now = Date.now()
   
-  // Check if record exists
-  const existing = db.prepare('SELECT id FROM gmail_tokens WHERE id = ?').get('default') as { id: string } | undefined
+  // Get existing tokens to preserve refresh_token if not provided
+  const existing = await getTokens()
   
-  if (existing) {
-    // Update existing
-    const stmt = db.prepare(`
-      UPDATE gmail_tokens 
-      SET access_token = ?,
-          refresh_token = ?,
-          scope = ?,
-          token_type = ?,
-          expiry_date = ?,
-          updated_at = ?
-      WHERE id = 'default'
-    `)
-    stmt.run(
-      tokens.access_token || null,
-      tokens.refresh_token || null,
-      tokens.scope || null,
-      tokens.token_type || null,
-      tokens.expiry_date || null,
-      now
-    )
-  } else {
-    // Insert new
-    const stmt = db.prepare(`
-      INSERT INTO gmail_tokens (
-        id, access_token, refresh_token, scope, token_type, expiry_date, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    stmt.run(
-      'default',
-      tokens.access_token || null,
-      tokens.refresh_token || null,
-      tokens.scope || null,
-      tokens.token_type || null,
-      tokens.expiry_date || null,
-      now,
-      now
-    )
+  // Preserve refresh_token if not provided in input
+  const refresh_token = tokens.refresh_token !== undefined 
+    ? tokens.refresh_token 
+    : (existing?.refresh_token || null)
+  
+  const tokenData: GmailTokens = {
+    id: 'default',
+    access_token: tokens.access_token ?? null,
+    refresh_token,
+    scope: tokens.scope ?? null,
+    token_type: tokens.token_type ?? null,
+    expiry_date: tokens.expiry_date ?? null,
+    created_at: existing?.created_at || now,
+    updated_at: now,
   }
+  
+  await kv.set(TOKEN_KEY, tokenData)
 }
 
 /**
  * Get Gmail OAuth tokens
- * 
- * The gmail_tokens table is guaranteed to exist because getDb() ensures
- * all tables from schema.sql are created before any database access.
  */
-export function getTokens(): GmailTokens | null {
-  const db = getDb()
-  const stmt = db.prepare('SELECT * FROM gmail_tokens WHERE id = ?')
-  const row = stmt.get('default') as any
-  
-  if (!row) {
+export async function getTokens(): Promise<GmailTokens | null> {
+  try {
+    const tokenData = await kv.get<GmailTokens>(TOKEN_KEY)
+    return tokenData || null
+  } catch (error) {
+    console.error('[GMAIL_TOKEN_STORE] Error getting tokens from KV:', error)
     return null
-  }
-  
-  return {
-    id: row.id,
-    access_token: row.access_token,
-    refresh_token: row.refresh_token,
-    scope: row.scope,
-    token_type: row.token_type,
-    expiry_date: row.expiry_date,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
   }
 }
 
 /**
  * Clear Gmail OAuth tokens
- * 
- * The gmail_tokens table is guaranteed to exist because getDb() ensures
- * all tables from schema.sql are created before any database access.
  */
-export function clearTokens(): void {
-  const db = getDb()
-  const stmt = db.prepare('DELETE FROM gmail_tokens WHERE id = ?')
-  stmt.run('default')
+export async function clearTokens(): Promise<void> {
+  await kv.del(TOKEN_KEY)
 }
