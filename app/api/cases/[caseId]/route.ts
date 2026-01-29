@@ -46,7 +46,10 @@ export async function GET(
     
     // Extract relevant fields
     const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
-    
+
+    // Debug log: Check if ordered_quantity exists in meta
+    console.log('[CASE_READ] ordered_quantity:', meta?.po_line?.ordered_quantity, 'caseId:', caseId)
+
     return NextResponse.json({
       case_id: caseData.case_id,
       po_number: caseData.po_number,
@@ -60,6 +63,7 @@ export async function GET(
       meta: {
         parsed_best_fields_v1: meta.parsed_best_fields_v1 ?? null,
         agent_queue: meta.agent_queue ?? null,
+        po_line: meta.po_line ?? null, // ✅ FIX: Include po_line with ordered_quantity
       },
     })
   } catch (error) {

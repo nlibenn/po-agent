@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { Suspense } from 'react'
 import { ChatProvider } from '@/components/chat/ChatProvider'
 import { CompanionChat } from '@/components/CompanionChat'
 import { BuyerWorkbenchNav } from '@/components/BuyerWorkbenchNav'
@@ -17,25 +18,31 @@ export default function AppLayout({
   children: React.ReactNode
 }) {
   return (
-    <AuthGate>
-      <ChatProvider>
-        <WorkspaceProvider>
-          <div className="flex h-full">
-            {/* Sidebar - Frame/Shell with subtle tinted background */}
-            <div className="flex-shrink-0 bg-neutral-100/50">
-              <BuyerWorkbenchNav />
-            </div>
-            {/* Main workbench - Cleaner, lighter workspace surface */}
-            <main className="flex-1 flex flex-col overflow-hidden bg-white/40">
-              <BuyerWorkbenchHeader />
-              <div className="flex-1 overflow-auto">
-                {children}
+    <Suspense fallback={
+      <div className="h-full flex items-center justify-center">
+        <div className="text-neutral-600">Loading...</div>
+      </div>
+    }>
+      <AuthGate>
+        <ChatProvider>
+          <WorkspaceProvider>
+            <div className="flex h-full">
+              {/* Sidebar - Frame/Shell with subtle tinted background */}
+              <div className="flex-shrink-0 bg-neutral-100/50">
+                <BuyerWorkbenchNav />
               </div>
-            </main>
-          </div>
-          <CompanionChat />
-        </WorkspaceProvider>
-      </ChatProvider>
-    </AuthGate>
+              {/* Main workbench - Cleaner, lighter workspace surface */}
+              <main className="flex-1 flex flex-col overflow-hidden bg-white/40">
+                <BuyerWorkbenchHeader />
+                <div className="flex-1 overflow-auto">
+                  {children}
+                </div>
+              </main>
+            </div>
+            <CompanionChat />
+          </WorkspaceProvider>
+        </ChatProvider>
+      </AuthGate>
+    </Suspense>
   )
 }

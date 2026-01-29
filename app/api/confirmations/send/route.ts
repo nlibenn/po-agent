@@ -630,19 +630,28 @@ export async function POST(request: NextRequest) {
       // Update case state via transitionCase (only if email was actually sent)
       // Get current state before transition for logging
       const fromState = caseData.state
-      
+
+      // Choose appropriate transition based on current state
+      // - From INBOX_LOOKUP: OUTREACH_SENT_OK -> OUTREACH_SENT (initial outreach)
+      // - From WAITING/FOLLOWUP_SENT: FOLLOWUP_SENT_OK -> FOLLOWUP_SENT (follow-up)
+      const isFollowup = fromState === CaseState.WAITING || fromState === CaseState.FOLLOWUP_SENT
+      const toState = isFollowup ? CaseState.FOLLOWUP_SENT : CaseState.OUTREACH_SENT
+      const event = isFollowup ? TransitionEvent.FOLLOWUP_SENT_OK : TransitionEvent.OUTREACH_SENT_OK
+
       // [SEND] transitioning case - log before transition
       console.log('[SEND] transitioning case', {
         caseId,
         fromState,
-        toState: CaseState.OUTREACH_SENT,
+        toState,
+        event,
+        isFollowup,
       })
-      
+
       try {
         transitionCase({
           caseId,
-          toState: CaseState.OUTREACH_SENT,
-          event: TransitionEvent.OUTREACH_SENT_OK,
+          toState,
+          event,
           summary: `Sent confirmation email for PO ${poNumber} Line ${lineId}${usedReply ? ' (reply in thread)' : ' (new email)'}`,
           patch: {
             status: CaseStatus.STILL_AMBIGUOUS,
@@ -684,7 +693,7 @@ export async function POST(request: NextRequest) {
           })
         }
         
-        console.info('[SEND] transitionCase succeeded', { caseId, toState: CaseState.OUTREACH_SENT })
+        console.info('[SEND] transitionCase succeeded', { caseId, toState })
       } catch (transitionError: any) {
         // [SEND] transition failed - log error
         console.error('[SEND] transition failed', { caseId, error: transitionError.message })

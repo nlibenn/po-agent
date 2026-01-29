@@ -184,7 +184,7 @@ export interface OrchestratorResult {
 function buildNeedsHumanContext(params: {
   blockingReason: string
   extractedFields: ExtractedFieldsBest | null
-  inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | null
+  inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | 'INBOX_ERROR' | null
   missingFields: string[]
   supplierEmail?: string | null
   hasMessages: boolean
@@ -276,7 +276,7 @@ function buildNeedsHumanContext(params: {
  */
 function applyPolicyV1(params: {
   caseData: SupplierChaseCase
-  inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | null
+  inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | 'INBOX_ERROR' | null
   extractedFields: ExtractedFieldsBest | null
   missingFields: string[]
   lastEmailSentAt: number | null
@@ -408,6 +408,16 @@ function applyPolicyV1(params: {
       reason: `Supplier responded but still missing: ${missingFields.join(', ')}`,
       missing_fields_remaining: missingFields,
       risk_level: riskLevel,
+    }
+  }
+
+  // Guard: If inbox search failed, do not assume absence of confirmations
+  if (inboxClassification === 'INBOX_ERROR') {
+    return {
+      action_type: 'NEEDS_HUMAN',
+      reason: 'Inbox search failed due to a connection or authentication error. Cannot determine confirmation status.',
+      missing_fields_remaining: missingFields,
+      risk_level: 'HIGH',
     }
   }
 
@@ -564,7 +574,7 @@ async function collectEvidence(
   debug: boolean = false,
   onProgress?: (message: string) => void
 ): Promise<{
-  inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | null
+  inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | 'INBOX_ERROR' | null
   threadId: string | null
   threadIdSource: 'meta' | 'inbox_search' | 'none'
   lastEmailSentAt: number | null
@@ -594,7 +604,7 @@ async function collectEvidence(
     }
   }
 
-  let inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | null = null
+  let inboxClassification: 'FOUND_CONFIRMED' | 'FOUND_INCOMPLETE' | 'NOT_FOUND' | 'INBOX_ERROR' | null = null
 
   // Step 2: If no threadId in meta, run inbox search to discover thread
   if (!threadId) {
@@ -603,6 +613,12 @@ async function collectEvidence(
         console.log(`[ACK_ORCHESTRATOR] No threadId in meta, running inbox search...`)
       }
       onProgress?.(`Searching Gmail inbox for PO ${caseData.po_number}...`)
+
+      // Calculate search floor based on lookback window, NOT case creation time
+      // This ensures we find confirmation emails that arrived before the case was created
+      const lookbackMs = lookbackDays * 24 * 60 * 60 * 1000
+      const searchFloor = Date.now() - lookbackMs
+
       const searchResult = await searchInboxForConfirmation({
         caseId,
         poNumber: caseData.po_number,
@@ -611,6 +627,7 @@ async function collectEvidence(
         supplierDomain: caseData.supplier_domain || null,
         optionalKeywords: [],
         lookbackDays,
+        searchAfterEpochMs: searchFloor, // ✅ FIX: Use lookback window instead of case creation time
       })
       
       inboxClassification = searchResult.classification
@@ -626,8 +643,8 @@ async function collectEvidence(
         }
       }
     } catch (error) {
-      console.error(`[ACK_ORCHESTRATOR] inbox search failed for ${caseId}:`, error)
-      // Continue with null classification and threadId
+      console.error(`[ACK_ORCHESTRATOR] ❌ Inbox search FAILED for ${caseId} — cannot determine confirmation status:`, error)
+      inboxClassification = 'INBOX_ERROR'
     }
   }
 
@@ -1614,11 +1631,19 @@ export async function runAckOrchestrator(input: OrchestratorInput): Promise<Orch
           ? `Agent auto-sent email: ${draftedEmail.subject} (demo mode: sent to ${actualTo})`
           : `Agent auto-sent email: ${draftedEmail.subject} (bcc: ${bcc})`
 
+        // Choose appropriate transition based on current state
+        // - From INBOX_LOOKUP: OUTREACH_SENT_OK -> OUTREACH_SENT (initial outreach)
+        // - From WAITING/FOLLOWUP_SENT: FOLLOWUP_SENT_OK -> FOLLOWUP_SENT (follow-up)
+        const currentState = caseDataAfter.state
+        const isFollowup = currentState === CaseState.WAITING || currentState === CaseState.FOLLOWUP_SENT
+        const toState = isFollowup ? CaseState.FOLLOWUP_SENT : CaseState.OUTREACH_SENT
+        const event = isFollowup ? TransitionEvent.FOLLOWUP_SENT_OK : TransitionEvent.OUTREACH_SENT_OK
+
         // Update case state via transitionCase
         transitionCase({
           caseId,
-          toState: CaseState.OUTREACH_SENT,
-          event: TransitionEvent.OUTREACH_SENT_OK,
+          toState,
+          event,
           summary: summaryText,
           patch: {
             meta,

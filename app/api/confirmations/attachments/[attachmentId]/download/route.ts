@@ -52,10 +52,11 @@ export async function GET(
     const binaryData = Buffer.from(attachment.binary_data_base64, 'base64')
     
     // Return PDF as blob
+    const disposition = request.nextUrl.searchParams.get('inline') === '1' ? 'inline' : 'attachment'
     return new NextResponse(binaryData, {
       headers: {
         'Content-Type': attachment.mime_type || 'application/pdf',
-        'Content-Disposition': `attachment; filename="${attachment.filename || 'attachment.pdf'}"`,
+        'Content-Disposition': `${disposition}; filename="${attachment.filename || 'attachment.pdf'}"`,
         'Content-Length': binaryData.length.toString(),
       },
     })

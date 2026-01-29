@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { ChevronDown, ChevronRight, FileText, CheckCircle2, Paperclip, FileSpreadsheet, XCircle, Loader2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, CheckCircle2, Paperclip, FileSpreadsheet, XCircle, Loader2, Eye, Download } from 'lucide-react'
 import { useAgentState, TaskStepStatus } from './AgentStateContext'
 
 interface AgentResult {
@@ -77,11 +77,13 @@ export function AgentStatePanel({
   // EMERGENCY: Circuit breaker to prevent infinite loops
   const renderCount = useRef(0)
   const prevCaseIdRef = useRef<string | null>(null)
+  const lastLoggedCaseIdRef = useRef<string | null>(null)
   
   // Reset render count when caseId changes
   if (prevCaseIdRef.current !== caseId) {
     renderCount.current = 0
     prevCaseIdRef.current = caseId
+    lastLoggedCaseIdRef.current = null
   }
   
   const agentState = useAgentState()
@@ -97,7 +99,9 @@ export function AgentStatePanel({
     recent_events: any[]
     parsed_best_fields?: any
     parsed_best_fields_v1?: any
+    confirmation_record?: { supplier_order_number: string | null; confirmed_ship_date: string | null; confirmed_quantity: number | null } | null
   } | null>(null)
+  const [caseDetailsRefreshTrigger, setCaseDetailsRefreshTrigger] = useState(0)
 
   // Check Gmail connection status
   // FIXED: Removed agentState from dependencies (it's a context object that changes identity)
@@ -123,7 +127,16 @@ export function AgentStatePanel({
     return () => clearInterval(interval)
   }, [setGmailStatus])
 
-  // Fetch case details for PO History timeline (loop-safe: primitive dep only)
+  // Refetch case details when confirmations/PDFs are updated (fix: card was stale)
+  useEffect(() => {
+    const handler = () => {
+      if (caseId) setCaseDetailsRefreshTrigger(t => t + 1)
+    }
+    window.addEventListener('confirmationRecordUpdated', handler)
+    return () => window.removeEventListener('confirmationRecordUpdated', handler)
+  }, [caseId])
+
+  // Fetch case details for PO History timeline; refetch when caseId, attachments, or refresh trigger change
   useEffect(() => {
     if (!caseId) {
       setCaseDetails(null)
@@ -131,8 +144,12 @@ export function AgentStatePanel({
     }
 
     const controller = new AbortController()
+    lastLoggedCaseIdRef.current = null
 
     const fetchCaseDetails = async () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AgentStatePanel.tsx:fetchCaseDetails',message:'case details fetch started',data:{caseId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1'})}).catch(()=>{});
+      // #endregion
       try {
         const response = await fetch(`/api/confirmations/case/${encodeURIComponent(caseId)}`, {
           signal: controller.signal,
@@ -140,11 +157,20 @@ export function AgentStatePanel({
 
         if (response.ok) {
           const data = await response.json()
+          // #region agent log
+          const v1 = data.parsed_best_fields_v1 ?? data.case?.meta?.parsed_best_fields_v1
+          const flat = data.parsed_best_fields
+          const applied = data.case?.meta?.confirmation_fields_applied?.fields
+          const rec = data.confirmation_record
+          const pdfCount = attachments.filter((a: { mime_type?: string }) => a.mime_type === 'application/pdf').length
+          fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AgentStatePanel.tsx:fetchCaseDetails',message:'case details fetch completed',data:{caseId,hasV1:!!v1,hasV1Fields:!!(v1?.fields),v1FieldKeys:v1?.fields?Object.keys(v1.fields):[],hasFlat:!!flat,flatKeys:flat?Object.keys(flat):[],hasApplied:!!applied,appliedFieldKeys:applied?Object.keys(applied):[],hasRecord:!!rec,recordHasSO:!!(rec?.supplier_order_number),recordHasDate:!!(rec?.confirmed_ship_date),recordHasQty:rec?.confirmed_quantity!=null,caseState:data.case?.state,pdfCount,hasPdfsNoParsed:pdfCount>0&&!v1?.fields},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H2'})}).catch(()=>{});
+          // #endregion
           setCaseDetails({
             case: data.case,
             recent_events: data.recent_events || [],
             parsed_best_fields: data.parsed_best_fields || null,
             parsed_best_fields_v1: data.parsed_best_fields_v1 || null,
+            confirmation_record: data.confirmation_record || null,
           })
         }
       } catch (err: any) {
@@ -156,7 +182,7 @@ export function AgentStatePanel({
 
     fetchCaseDetails()
     return () => controller.abort()
-  }, [caseId])
+  }, [caseId, attachments, caseDetailsRefreshTrigger])
 
   // Update PDFs in data sources when attachments change
   // FIXED: Removed agentState from dependencies
@@ -167,8 +193,11 @@ export function AgentStatePanel({
         filename: att.filename,
         attachmentId: att.attachment_id,
       }))
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AgentStatePanel.tsx:attachments',message:'attachments updated',data:{caseId,attachmentCount:attachments.length,pdfCount:pdfs.length},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H3'})}).catch(()=>{});
+    // #endregion
     setPDFs(pdfs)
-  }, [attachments, setPDFs])
+  }, [attachments, setPDFs, caseId])
 
   // Update current task when case changes
   // FIXED: Removed agentState from dependencies
@@ -179,6 +208,37 @@ export function AgentStatePanel({
       resetTask()
     }
   }, [poNumber, lineId, setCurrentTask, resetTask])
+
+  // Log confirmation-detail display values when caseDetails changes (H2)
+  useEffect(() => {
+    if (!caseId || !caseDetails) return
+    if (lastLoggedCaseIdRef.current === caseId) return
+    lastLoggedCaseIdRef.current = caseId
+    const parsed = caseDetails.case?.meta?.parsed_best_fields_v1
+    const flat = caseDetails.parsed_best_fields
+    const applied = caseDetails.case?.meta?.confirmation_fields_applied?.fields
+    const rec = caseDetails.confirmation_record
+    const soParsed = parsed?.fields?.supplier_order_number?.value ?? flat?.supplier_order_number
+    const soApplied = applied?.supplier_reference?.value
+    const soRec = rec?.supplier_order_number != null && rec.supplier_order_number !== '' ? rec.supplier_order_number : null
+    const soValue = soParsed ?? soApplied ?? soRec
+    const soSrc = soParsed != null ? 'parsed' : soApplied != null ? 'applied' : soRec != null ? 'record' : null
+    const dateParsed = parsed?.fields?.confirmed_delivery_date?.value ?? flat?.confirmed_delivery_date
+    const dateApplied = applied?.delivery_date?.value
+    const dateRec = rec?.confirmed_ship_date != null && rec.confirmed_ship_date !== '' ? rec.confirmed_ship_date : null
+    const dateValue = dateParsed ?? dateApplied ?? dateRec
+    const dateSrc = dateParsed != null ? 'parsed' : dateApplied != null ? 'applied' : dateRec != null ? 'record' : null
+    const qtyParsed = parsed?.fields?.confirmed_quantity?.value ?? (flat?.confirmed_quantity != null ? flat.confirmed_quantity : null)
+    const qtyApplied = applied?.quantity?.value != null ? applied.quantity.value : null
+    const qtyRec = rec?.confirmed_quantity != null ? rec.confirmed_quantity : null
+    const qtyValue = qtyParsed ?? qtyApplied ?? qtyRec
+    const qtySrc = qtyParsed != null ? 'parsed' : qtyApplied != null ? 'applied' : qtyRec != null ? 'record' : null
+    const caseState = caseDetails.case?.state ?? null
+    const isAwaiting = caseState === 'OUTREACH_SENT' || caseState === 'WAITING' || caseState === 'FOLLOWUP_SENT'
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AgentStatePanel.tsx:confirmationDetail',message:'confirmation detail display values',data:{caseId,supplierRef:{source:soSrc,value:soValue,status:soValue?'ok':isAwaiting?'waiting':'missing'},deliveryDate:{source:dateSrc,value:dateValue,status:dateValue?'ok':isAwaiting?'waiting':'missing'},quantity:{source:qtySrc,value:qtyValue,status:qtyValue!=null?'ok':isAwaiting?'waiting':'missing'}},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H2'})}).catch(()=>{});
+    // #endregion
+  }, [caseId, caseDetails])
 
   // Look up PO data from normalizedRows for expected delivery date
   // MUST be before early return to follow Rules of Hooks
@@ -326,128 +386,136 @@ export function AgentStatePanel({
                 <p className="text-xs text-text-muted">No activity yet</p>
               )}
 
-              {/* CONFIRMATION DETAILS */}
-              {caseState !== 'RESOLVED' && (
-                <div className="space-y-0.5 pt-2 border-t border-border/30">
-                  <div className="flex items-start gap-2 text-sm">
-                    <span className="shrink-0 mt-0.5">📋</span>
-                    <span className="font-medium text-text">Confirmation Details</span>
-                  </div>
-                  <ul className="ml-6 text-xs space-y-1 mt-2">
+              {/* CONFIRMATION DETAILS — show for non-resolved and resolved (remember previously confirmed) */}
+              <div className="space-y-0.5 pt-2 border-t border-border/30">
+                <div className="flex items-start gap-2 text-sm">
+                  <span className="shrink-0 mt-0.5">📋</span>
+                  <span className="font-medium text-text">Confirmation Details</span>
+                </div>
+                <ul className="ml-6 text-xs space-y-1 mt-2">
+                  {(() => {
+                    const parsed = caseDetails?.case?.meta?.parsed_best_fields_v1
+                    const flat = caseDetails?.parsed_best_fields
+                    const applied = caseDetails?.case?.meta?.confirmation_fields_applied?.fields
+                    const rec = caseDetails?.confirmation_record
+                    const soParsed = parsed?.fields?.supplier_order_number?.value ?? flat?.supplier_order_number
+                    const soApplied = applied?.supplier_reference?.value
+                    const soRec = rec?.supplier_order_number
+                    const soValue = soParsed ?? soApplied ?? (soRec != null && soRec !== '' ? soRec : null)
+                    const dateParsed = parsed?.fields?.confirmed_delivery_date?.value ?? flat?.confirmed_delivery_date
+                    const dateApplied = applied?.delivery_date?.value
+                    const dateRec = rec?.confirmed_ship_date
+                    const dateValue = dateParsed ?? dateApplied ?? (dateRec != null && dateRec !== '' ? dateRec : null)
+                    const qtyParsed = parsed?.fields?.confirmed_quantity?.value ?? (flat?.confirmed_quantity != null ? flat.confirmed_quantity : null)
+                    const qtyApplied = applied?.quantity?.value != null ? applied.quantity.value : null
+                    const qtyRec = rec?.confirmed_quantity != null ? rec.confirmed_quantity : null
+                    const qtyValue = qtyParsed ?? qtyApplied ?? qtyRec
+                    return (
+                    <>
                     <li className="flex items-center gap-2">
-                      {(() => {
-                        const parsed = caseDetails?.case?.meta?.parsed_best_fields_v1
-                        const value = parsed?.fields?.supplier_order_number?.value || caseDetails?.parsed_best_fields?.supplier_order_number
-                        return value ? (
-                          <>
-                            <span className="text-success">✓</span>
-                            <span className="text-text">Supplier Reference: </span>
-                            <span className="text-text font-medium">{value}</span>
-                          </>
-                        ) : isAwaitingSupplierReply ? (
-                          <>
-                            <span className="text-warning">⏳</span>
-                            <span className="text-text-muted">Supplier Reference (waiting for reply)</span>
-                          </>
-                        ) : (
-                          <>
-                            <span className="text-error">✗</span>
-                            <span className="text-text-muted">Supplier Reference (missing)</span>
-                          </>
-                        )
-                      })()}
+                      {soValue ? (
+                        <>
+                          <span className="text-success">✓</span>
+                          <span className="text-text">Supplier Reference: </span>
+                          <span className="text-text font-medium">{soValue}</span>
+                        </>
+                      ) : isAwaitingSupplierReply ? (
+                        <>
+                          <span className="text-warning">⏳</span>
+                          <span className="text-text-muted">Supplier Reference (waiting for reply)</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-error">✗</span>
+                          <span className="text-text-muted">Supplier Reference (missing)</span>
+                        </>
+                      )}
                     </li>
                     <li className="flex items-center gap-2">
-                      {(() => {
-                        const parsed = caseDetails?.case?.meta?.parsed_best_fields_v1
-                        const confirmed = parsed?.fields?.confirmed_delivery_date?.value || caseDetails?.parsed_best_fields?.confirmed_delivery_date
-                        
-                        if (confirmed) {
-                          // Has confirmed value - check if it matches expected
+                      {dateValue ? (
+                        (() => {
                           const expectedDate = currentPOData?.due_date
                           const expected = expectedDate ? new Date(expectedDate).toISOString().split('T')[0] : null
-                          const hasMismatch = expected && confirmed !== expected
-                          
+                          const hasMismatch = expected && dateValue !== expected
                           return hasMismatch ? (
-                            // Mismatch - yellow warning
                             <>
                               <span className="text-warning">⚠️</span>
                               <span className="text-text">Delivery Date: </span>
-                              <span className="text-text font-medium">{confirmed}</span>
+                              <span className="text-text font-medium">{dateValue}</span>
                               <span className="text-text-muted text-xs ml-1">(Expected: {expected})</span>
                             </>
                           ) : (
-                            // Match - green check
                             <>
                               <span className="text-success">✓</span>
                               <span className="text-text">Delivery Date: </span>
-                              <span className="text-text font-medium">{confirmed}</span>
+                              <span className="text-text font-medium">{dateValue}</span>
                             </>
                           )
-                        } else if (isAwaitingSupplierReply) {
-                          return (
-                            <>
-                              <span className="text-warning">⏳</span>
-                              <span className="text-text-muted">Delivery Date (waiting for reply)</span>
-                            </>
-                          )
-                        } else {
-                          return (
-                            <>
-                              <span className="text-error">✗</span>
-                              <span className="text-text-muted">Delivery Date (missing)</span>
-                            </>
-                          )
-                        }
-                      })()}
+                        })()
+                      ) : isAwaitingSupplierReply ? (
+                        <>
+                          <span className="text-warning">⏳</span>
+                          <span className="text-text-muted">Delivery Date (waiting for reply)</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-error">✗</span>
+                          <span className="text-text-muted">Delivery Date (missing)</span>
+                        </>
+                      )}
                     </li>
                     <li className="flex items-center gap-2">
-                      {(() => {
-                        const parsed = caseDetails?.case?.meta?.parsed_best_fields_v1
-                        const qty = parsed?.fields?.confirmed_quantity?.value
-                        const confirmed = (qty !== null && qty !== undefined) ? qty : (caseDetails?.parsed_best_fields?.confirmed_quantity !== null && caseDetails?.parsed_best_fields?.confirmed_quantity !== undefined) ? caseDetails.parsed_best_fields.confirmed_quantity : null
-                        
-                        if (confirmed !== null) {
-                          // Has confirmed value - check if it matches expected
+                      {qtyValue != null ? (
+                        (() => {
                           const expected = caseDetails?.case?.meta?.po_line?.ordered_quantity
-                          const hasMismatch = expected !== null && expected !== undefined && confirmed !== expected
-                          
+
+                          // Cannot verify if expected is not set
+                          if (expected == null) {
+                            return (
+                              <>
+                                <span className="text-warning">⚠️</span>
+                                <span className="text-text">Quantity: </span>
+                                <span className="text-text font-medium">{qtyValue}</span>
+                                <span className="text-text-muted text-xs ml-1">(Cannot verify - expected qty not set)</span>
+                              </>
+                            )
+                          }
+
+                          // Check for mismatch
+                          const hasMismatch = qtyValue !== expected
+
                           return hasMismatch ? (
-                            // Mismatch - yellow warning
                             <>
                               <span className="text-warning">⚠️</span>
                               <span className="text-text">Quantity: </span>
-                              <span className="text-text font-medium">{confirmed}</span>
+                              <span className="text-text font-medium">{qtyValue}</span>
                               <span className="text-text-muted text-xs ml-1">(Expected: {expected})</span>
                             </>
                           ) : (
-                            // Match - green check
                             <>
                               <span className="text-success">✓</span>
                               <span className="text-text">Quantity: </span>
-                              <span className="text-text font-medium">{confirmed}</span>
+                              <span className="text-text font-medium">{qtyValue}</span>
                             </>
                           )
-                        } else if (isAwaitingSupplierReply) {
-                          return (
-                            <>
-                              <span className="text-warning">⏳</span>
-                              <span className="text-text-muted">Quantity (waiting for reply)</span>
-                            </>
-                          )
-                        } else {
-                          return (
-                            <>
-                              <span className="text-error">✗</span>
-                              <span className="text-text-muted">Quantity (missing)</span>
-                            </>
-                          )
-                        }
-                      })()}
+                        })()
+                      ) : isAwaitingSupplierReply ? (
+                        <>
+                          <span className="text-warning">⏳</span>
+                          <span className="text-text-muted">Quantity (waiting for reply)</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-error">✗</span>
+                          <span className="text-text-muted">Quantity (missing)</span>
+                        </>
+                      )}
                     </li>
-                  </ul>
-                </div>
-              )}
+                  </>
+                    )
+                  })()}
+                </ul>
+              </div>
 
               {/* Next check */}
               {caseDetails?.case?.next_check_at && (
@@ -553,7 +621,24 @@ export function AgentStatePanel({
                     {(pdfsExpanded ? agentState.dataSources.pdfs : agentState.dataSources.pdfs.slice(0, 3)).map((pdf, idx) => (
                       <div key={idx} className="flex items-center gap-1.5 text-xs">
                         <Paperclip className="w-3 h-3 text-text-subtle flex-shrink-0" />
-                        <span className="text-text-muted truncate">{pdf.filename}</span>
+                        <span className="text-text-muted truncate flex-1">{pdf.filename}</span>
+                        <a
+                          href={`/api/confirmations/attachments/${pdf.attachmentId}/download?inline=1`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="View PDF"
+                          className="text-text-subtle hover:text-blue-500 transition-colors flex-shrink-0"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </a>
+                        <a
+                          href={`/api/confirmations/attachments/${pdf.attachmentId}/download`}
+                          download={pdf.filename}
+                          title="Download PDF"
+                          className="text-text-subtle hover:text-green-500 transition-colors flex-shrink-0"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </a>
                       </div>
                     ))}
                     {!pdfsExpanded && agentState.dataSources.pdfs.length > 3 && (

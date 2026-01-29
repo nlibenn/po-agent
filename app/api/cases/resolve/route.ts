@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
       )
     }
     
-    const { poNumber, lineId } = body
+    const { poNumber, lineId, orderQty, unitPrice, uom } = body
     
     // Find existing case
     let caseData = findCaseByPoLine(poNumber, lineId)
@@ -34,6 +34,22 @@ export async function POST(request: NextRequest) {
       const caseId = `${Date.now()}-${Math.random().toString(36).substring(7)}`
       const now = Date.now()
       
+      // Build meta with PO line data for agent context
+      const meta: Record<string, any> = {
+        po_line: {
+          po_number: poNumber,
+          line_id: lineId,
+          ordered_quantity: orderQty != null && Number.isFinite(orderQty) && orderQty > 0 ? orderQty : null,
+          unit_price: unitPrice != null && Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : null,
+          uom: uom ?? null,
+        },
+      }
+
+      // Log warning if ordered_quantity is missing
+      if (meta.po_line.ordered_quantity === null) {
+        console.warn('[CASES_RESOLVE] Creating case without ordered_quantity', { caseId, poNumber, lineId })
+      }
+
       createCase({
         case_id: caseId,
         po_number: poNumber,
@@ -50,7 +66,7 @@ export async function POST(request: NextRequest) {
         updated_at: now,
         next_check_at: null,
         last_inbox_check_at: null,
-        meta: {},
+        meta,
       })
       
       // Fetch the newly created case

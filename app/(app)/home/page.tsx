@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { formatRelativeTime } from '@/src/lib/utils/relativeTime'
 import { getDriveSummary } from '@/src/lib/driveStorage'
+import { ResetEverythingButton } from '@/components/ResetEverythingButton'
 
 interface GmailStatus {
   connected: boolean
@@ -187,6 +188,19 @@ function HomePageContent() {
             ))}
           </div>
         </div>
+
+        {/* Developer Tools Section */}
+        {(process.env.NODE_ENV !== 'production' || process.env.NEXT_PUBLIC_DEMO_MODE === 'true') && (
+          <div className="mt-8 pt-8 border-t border-border/30">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium text-text-muted mb-1">Developer Tools</h3>
+                <p className="text-xs text-text-subtle">Demo and testing utilities</p>
+              </div>
+              <ResetEverythingButton size="sm" />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Coming Soon Modal */}

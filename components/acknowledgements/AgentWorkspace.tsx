@@ -109,6 +109,7 @@ export function AgentWorkspace({
   const [showCustomEmailInput, setShowCustomEmailInput] = useState(false)
   const [isSavingEmail, setIsSavingEmail] = useState(false)
   const [isSendingDraft, setIsSendingDraft] = useState(false)
+  const [inboxUnavailable, setInboxUnavailable] = useState(false)
 
   // Email editor state machine:
   // - idle|sent -> editing when a draft is created (mount editor)
@@ -724,42 +725,26 @@ export function AgentWorkspace({
           const toolResult = toolCall.result
           
           if (tool === 'search_inbox') {
-            // Step 1: Searching inbox
-            agentState.updateTaskStep('search_inbox', 'completed', `Searching inbox for PO ${poNumber || 'N/A'}`)
-            
-            // Step 2: Found PDFs
-            if (toolResult?.pdf_count > 0) {
-              agentState.addTaskStep({
-                id: 'found_pdfs',
-                label: `Found ${toolResult.pdf_count} PDF${toolResult.pdf_count !== 1 ? 's' : ''}`,
-                status: 'completed',
-              })
-              
-              // Step 3: Parsing PDFs (if PDFs found and parsed)
-              if (toolResult?.has_parsed_data) {
-                agentState.addTaskStep({
-                  id: 'parsing_pdfs',
-                  label: 'Parsing PDF attachments',
-                  status: 'completed',
-                })
-              } else if (toolResult?.pdf_count > 0) {
-                agentState.addTaskStep({
-                  id: 'parsing_pdfs',
-                  label: 'Parsing PDF attachments',
-                  status: 'in_progress',
-                })
-              }
+            if (toolResult?.status === 'inbox_unavailable') {
+              agentState.updateTaskStep('search_inbox', 'failed', 'Inbox search failed — data unavailable')
+              console.warn('[AgentWorkspace] ⚠️ Inbox search failed. Agent does not have inbox data. Status:', toolResult?.error)
+              setInboxUnavailable(true)
+            } else {
+              agentState.updateTaskStep('search_inbox', 'completed', `Searching inbox for PO ${poNumber || 'N/A'}`)
+              setInboxUnavailable(false)
+            }
+            if (toolResult?.has_parsed_data && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('confirmationRecordUpdated'))
             }
           } else if (tool === 'read_confirmation') {
-            // Step 3: Parsing PDFs
-            agentState.updateTaskStep('parsing_pdfs', 'completed', 'Parsing PDF attachments')
-            
-            // Step 4: Extracting confirmation data
             agentState.addTaskStep({
               id: 'extracting_data',
               label: 'Extracting confirmation data',
               status: toolResult?.status === 'success' ? 'completed' : toolResult?.status === 'error' ? 'failed' : 'in_progress',
             })
+            if (toolResult?.status === 'success' && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('confirmationRecordUpdated'))
+            }
           } else if (tool === 'draft_email') {
             // Step 5: Drafting email
             agentState.addTaskStep({
@@ -914,23 +899,25 @@ export function AgentWorkspace({
           }
         }
 
-        // Add assistant response to chat (optionally compacted for send confirmation, or skipped if inline editor mounted)
-        if (!shouldSkipAssistantResponse) {
-          const finalAssistantResponse = shouldUseCompactSentMessage
-            ? sentSubject
-              ? `Email sent to supplier\n\nSubject: "${sentSubject}"`
-              : 'Email sent to supplier'
-            : assistantResponse
+        // Prepare assistant response (optionally compacted for send confirmation)
+        const finalAssistantResponse = shouldUseCompactSentMessage
+          ? sentSubject
+            ? `Email sent to supplier\n\nSubject: "${sentSubject}"`
+            : 'Email sent to supplier'
+          : assistantResponse
 
+        // ALWAYS update conversation history (for OpenAI API context)
+        setConversationHistory(prev => [
+          ...prev,
+          { role: 'assistant', content: finalAssistantResponse },
+        ])
+
+        // OPTIONALLY skip from visible UI (when inline editor is shown)
+        if (!shouldSkipAssistantResponse) {
           addMessage({
             role: 'assistant',
             content: finalAssistantResponse,
           })
-
-          setConversationHistory(prev => [
-            ...prev,
-            { role: 'assistant', content: finalAssistantResponse },
-          ])
         }
       } else {
         // No tool calls: just add assistant response to chat
@@ -1052,6 +1039,16 @@ export function AgentWorkspace({
           </div>
         </div>
       </div>
+
+      {/* Inbox unavailable warning */}
+      {inboxUnavailable && (
+        <div className="flex-shrink-0 mx-6 mt-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+          <span className="text-xs text-amber-800">
+            Inbox search failed. The agent does not have inbox data and cannot confirm absence of supplier responses.
+          </span>
+        </div>
+      )}
 
       {/* Messages */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-6 py-4">

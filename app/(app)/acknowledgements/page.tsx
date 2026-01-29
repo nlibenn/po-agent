@@ -120,26 +120,34 @@ export default function AcknowledgementsPage() {
     setActiveCaseKey(caseKey)
     setActivePO(po)
     setAgentResult(null) // Clear previous result
-    
+
     try {
+      // Look up full PO row data to get order_qty and unit_price
+      const poRow = normalizedRows.find(
+        row => row.po_id === po.po_id && row.line_id === (po.line_id || '')
+      )
+
       const response = await fetch('/api/cases/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           poNumber: po.po_id,
           lineId: po.line_id || '',
+          orderQty: poRow?.order_qty ?? null,
+          unitPrice: poRow?.unit_price ?? null,
+          // Could add UOM here if available in rawRow
         }),
       })
-      
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
         console.error('Failed to resolve case:', errorData.error || response.status)
         setActiveCaseId(null)
         return
       }
-      
+
       const data = await response.json()
-      
+
       if (data.ok && data.caseId) {
         setActiveCaseId(data.caseId)
       } else {
@@ -150,12 +158,16 @@ export default function AcknowledgementsPage() {
       console.error('Error resolving case:', error)
       setActiveCaseId(null)
     }
-  }, [])
+  }, [normalizedRows])
 
   // Handle agent result
   const handleAgentResult = useCallback((result: AgentResult | null) => {
     setAgentResult(result)
-    
+    // #region agent log
+    if (result?.evidence_summary?.pdf_attachments_count && activeCaseId) {
+      fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'acknowledgements/page.tsx:handleAgentResult',message:'agent result with PDF evidence',data:{activeCaseId,pdfCount:result.evidence_summary.pdf_attachments_count},timestamp:Date.now(),sessionId:'debug-session',runId:'confirmation-card-debug',hypothesisId:'H1'})}).catch(()=>{});
+    }
+    // #endregion
     // Refresh attachments if evidence was collected
     if (result?.evidence_summary?.pdf_attachments_count && activeCaseId) {
       // Re-trigger attachment load using resolved caseId
@@ -178,12 +190,15 @@ export default function AcknowledgementsPage() {
 
   // Handle case updated (e.g., after apply) - triggers work queue refresh
   const handleCaseUpdated = useCallback(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'acknowledgements/page.tsx:handleCaseUpdated',message:'case updated (apply/refresh)',data:{activeCaseId},timestamp:Date.now(),sessionId:'debug-session',runId:'confirmation-card-debug',hypothesisId:'H5'})}).catch(()=>{});
+    // #endregion
     // Trigger work queue refresh by incrementing key
     setWorkQueueRefreshKey(prev => prev + 1)
     
     // Dispatch event so work queue can refetch confirmation records
     window.dispatchEvent(new CustomEvent('confirmationRecordUpdated'))
-  }, [])
+  }, [activeCaseId])
 
   // Derive supplier email from matching row
   const supplierEmail = activePO ? (() => {

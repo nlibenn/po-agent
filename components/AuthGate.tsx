@@ -3,12 +3,6 @@
 import { useEffect, useState } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 
-// Debug logging helper - only runs at runtime, not during build
-const debugLog = (data: any) => {
-  if (typeof window === 'undefined') return // Skip during SSR/build
-  fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,timestamp:Date.now(),sessionId:'debug-session',runId:'run1'})}).catch(()=>{});
-}
-
 interface GmailStatus {
   connected: boolean
   email?: string
@@ -29,30 +23,18 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const checkAuth = async () => {
-      // #region agent log
-      debugLog({location:'AuthGate.tsx:25',message:'checkAuth entry',data:{pathname},hypothesisId:'C'});
-      // #endregion
       // Check for success parameter from OAuth callback
       const gmailConnected = searchParams?.get('gmail_connected') === '1'
-      // #region agent log
-      debugLog({location:'AuthGate.tsx:28',message:'Success param check',data:{gmailConnected},hypothesisId:'C'});
-      // #endregion
       
       if (gmailConnected) {
-        // OAuth just succeeded - wait a moment for KV write to complete, then check status
+        // OAuth just succeeded - wait a moment for token storage to complete, then check status
         console.log('[AUTH_GATE] Detected gmail_connected=1, waiting for token storage...')
-        await new Promise(resolve => setTimeout(resolve, 500)) // Wait 500ms for KV write
+        await new Promise(resolve => setTimeout(resolve, 500)) // Wait 500ms for token storage
       }
 
       try {
-        // #region agent log
-        debugLog({location:'AuthGate.tsx:36',message:'Before status fetch',data:{},hypothesisId:'C'});
-        // #endregion
         const response = await fetch('/api/gmail/status')
         const data: GmailStatus = await response.json()
-        // #region agent log
-        debugLog({location:'AuthGate.tsx:38',message:'Status response received',data:{connected:data.connected},hypothesisId:'C'});
-        // #endregion
         
         if (data.connected) {
           setIsAuthenticated(true)
@@ -63,16 +45,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             router.replace(newUrl.pathname + newUrl.search)
           }
         } else {
-          // #region agent log
-          debugLog({location:'AuthGate.tsx:49',message:'Not connected, redirecting to login',data:{},hypothesisId:'C'});
-          // #endregion
           // Not authenticated - redirect to login
           router.replace('/login')
         }
       } catch (error) {
-        // #region agent log
-        debugLog({location:'AuthGate.tsx:52',message:'Status fetch error',data:{errorMessage:error instanceof Error ? error.message : String(error),gmailConnected},hypothesisId:'C'});
-        // #endregion
         console.error('Error checking auth:', error)
         // On error, redirect to login (unless we just got success param)
         if (!gmailConnected) {

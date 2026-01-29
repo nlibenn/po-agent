@@ -32,7 +32,10 @@ export async function GET(
 
     const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
     const parsed_best_fields_v1 = meta.parsed_best_fields_v1 ?? null
-    
+
+    // Debug log: Check if ordered_quantity exists in meta
+    console.log('[CONFIRMATION_CASE_READ] ordered_quantity:', meta?.po_line?.ordered_quantity, 'caseId:', caseId, 'has_po_line:', !!meta?.po_line)
+
     const events = listEvents(caseId)
     // Get recent events (last 20, ordered by timestamp DESC)
     const allEvents = events.slice().sort((a, b) => b.timestamp - a.timestamp)
@@ -62,6 +65,23 @@ export async function GET(
         `
         )
         .get(caseId) as any) ?? null
+
+    const confirmation_record =
+      (db
+        .prepare(
+          `
+          SELECT
+            supplier_order_number,
+            confirmed_ship_date,
+            confirmed_quantity
+          FROM confirmation_records
+          WHERE po_id = ? AND line_id = ?
+          LIMIT 1
+        `
+        )
+        .get(caseData.po_number, caseData.line_id || '1') as
+        | { supplier_order_number: string | null; confirmed_ship_date: string | null; confirmed_quantity: number | null }
+        | undefined) ?? null
     
     return NextResponse.json({
       case: caseData,
@@ -71,6 +91,7 @@ export async function GET(
       attachments,
       parsed_best_fields,
       parsed_best_fields_v1,
+      confirmation_record,
     })
   } catch (error) {
     console.error('Error fetching case details:', error)

@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { appendFileSync } from 'fs'
+import { randomUUID } from 'crypto'
 import OpenAI from 'openai'
+
+const DEBUG_LOG_PATH = '/Users/nouraliben/Projects/PO Agent/.cursor/debug.log'
+function debugLog(payload: object) {
+  try { appendFileSync(DEBUG_LOG_PATH, JSON.stringify({ ...payload, sessionId: 'debug-session', runId: 'post-fix', hypothesisId: 'H6', timestamp: Date.now() }) + '\n') } catch (_) {}
+}
 import { getCase, listMessages, listAttachmentsForCase, addEvent, updateCase } from '@/src/lib/supplier-agent/store'
 import { searchInboxForConfirmation } from '@/src/lib/supplier-agent/inboxSearch'
 import { retrievePdfAttachmentsFromThread } from '@/src/lib/supplier-agent/emailAttachments'
 import { parseConfirmationFieldsSmart } from '@/src/lib/supplier-agent/parseConfirmationFields'
 import { extractTextFromPdfBase64 } from '@/src/lib/supplier-agent/pdfTextExtraction'
-import { generateConfirmationEmail } from '@/src/lib/supplier-agent/emailDraft'
+import { generateConfirmationEmail, type EmailDraftContext } from '@/src/lib/supplier-agent/emailDraft'
 import { sendNewEmail, sendReplyInThread } from '@/src/lib/supplier-agent/outreach'
 import { getDb, getDbPath } from '@/src/lib/supplier-agent/storage/sqlite'
 
@@ -29,7 +36,7 @@ function getOpenAIClient() {
  */
 function buildSystemPrompt(caseData: any): string {
   const missingFields = Array.isArray(caseData.missing_fields) ? caseData.missing_fields : []
-  const missingFieldsList = missingFields.length > 0 
+  const missingFieldsList = missingFields.length > 0
     ? missingFields.map((f: string) => {
         const friendlyNames: Record<string, string> = {
           'supplier_reference': 'Supplier Order Number',
@@ -39,12 +46,41 @@ function buildSystemPrompt(caseData: any): string {
         return friendlyNames[f] || f
       }).join(', ')
     : 'None - all fields confirmed'
-  
+
+  // Extract expected quantity from meta for mismatch detection
+  let expectedQty: number | null = null
+  if (caseData.meta) {
+    try {
+      const meta = typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : caseData.meta
+      if (meta.po_line?.ordered_quantity) {
+        const qty = typeof meta.po_line.ordered_quantity === 'number'
+          ? meta.po_line.ordered_quantity
+          : parseFloat(String(meta.po_line.ordered_quantity))
+        if (Number.isFinite(qty) && qty > 0) {
+          expectedQty = qty
+        }
+      }
+    } catch (e) {
+      // Ignore parse errors
+    }
+  }
+
+  console.log('[AGENT_CHAT] buildSystemPrompt - Expected Quantity:', {
+    caseId: caseData.case_id,
+    poNumber: caseData.po_number,
+    lineId: caseData.line_id,
+    expectedQty,
+    hasMeta: !!caseData.meta,
+    hasPoLine: !!(typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : caseData.meta)?.po_line,
+    metaKeys: caseData.meta ? Object.keys(typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : caseData.meta) : [],
+  })
+
   return `You are a procurement assistant helping a buyer with purchase order confirmations.
 
 CURRENT CONTEXT:
 - PO Number: ${caseData.po_number}-${caseData.line_id}
 - Supplier: ${caseData.supplier_name || 'Unknown'}${caseData.supplier_email ? ` (${caseData.supplier_email})` : ''}
+- Expected Quantity: ${expectedQty !== null ? expectedQty : 'Unknown'}
 - Missing Information: ${missingFieldsList}
 
 The user has already selected this PO. When they ask questions, they're asking about THIS specific PO. You don't need to ask which PO they mean.
@@ -66,6 +102,7 @@ Always:
 - Be conversational and helpful
 
 IMPORTANT: When you extract confirmation data, proactively flag:
+- ⚠️ Quantity mismatches (confirmed qty ≠ expected qty from PO)
 - ⚠️ Price changes (unit price or extended price differs from PO)
 - ⚠️ Payment terms changes
 - ⚠️ Unexpected freight costs
@@ -73,6 +110,15 @@ IMPORTANT: When you extract confirmation data, proactively flag:
 - ⚠️ Any notes indicating problems
 
 Format warnings clearly with ⚠️ symbol and explain the impact.
+
+QUANTITY MISMATCH DETECTION:
+When comparing confirmation data against the PO:
+- If confirmed quantity ≠ expected quantity: FLAG with "⚠️ QUANTITY MISMATCH"
+- Example: "⚠️ QUANTITY MISMATCH: Supplier confirmed 1 unit (Expected: 140)"
+- Always show both the confirmed and expected quantities when there's a mismatch
+- This is a critical issue that requires buyer attention
+- IMPORTANT: The expected quantity is available in the "expected_quantity" field of search_inbox and read_confirmation tool results. Always use that value when displaying expected quantity. Never display "Expected: Unknown" if expected_quantity is present in the tool result.
+- CRITICAL: When a quantity mismatch is detected, after flagging it, IMMEDIATELY call the draft_email tool with missing_fields: ["quantity"]. Do NOT write the email text in the chat — always use the draft_email tool so the inline email editor appears.
 
 BE PROACTIVE:
 When you search for confirmation and find NOTHING (no emails, no PDFs):
@@ -85,6 +131,13 @@ When you search and find PARTIAL data (some fields missing):
 - IMMEDIATELY offer to draft an email requesting the missing fields
 - Ask: "Would you like me to email the supplier to request [missing fields]?"
 
+INBOX FAILURE HANDLING:
+When search_inbox returns status "inbox_unavailable" or "error":
+- Do NOT say "no supplier responses found" or claim no confirmations exist
+- Tell the user: "I was unable to search the inbox due to a connectivity or authentication issue."
+- Suggest: "Please check that Gmail is connected and try again."
+- NEVER assert absence of confirmations when the search itself failed.
+
 Be proactive and helpful. Don't just report findings - suggest the next action.
 
 IMPORTANT WORKFLOW RULES:
@@ -93,6 +146,8 @@ IMPORTANT WORKFLOW RULES:
 2. When you've already searched the inbox in this conversation and found nothing, do NOT search again unless the user explicitly asks you to re-check.
 
 3. Once you draft an email, do NOT draft it again unless the user asks for changes.
+
+4. NEVER write email text directly in the chat. ALL email drafting MUST go through the draft_email tool — this is what triggers the inline email editor UI. If you write email text in the chat instead of calling draft_email, the user cannot edit or send it. This applies to ALL scenarios: missing fields, quantity mismatches, price discrepancies, follow-ups, or any other reason to contact the supplier.
 
 Remember what you've already done in this conversation to avoid repeating yourself.`
 }
@@ -132,7 +187,7 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       type: 'function',
       function: {
         name: 'draft_email',
-        description: 'Draft an email requesting missing confirmation information. Call this when the user confirms they want you to draft an email. Do not search the inbox before calling this.',
+        description: 'Draft an email to the supplier about this PO. Use this for ANY email drafting: requesting missing fields, flagging quantity mismatches, or any other supplier communication. ALWAYS call this tool instead of writing email text in the chat — the tool triggers the inline email editor UI.',
         parameters: {
           type: 'object',
           properties: {
@@ -222,6 +277,11 @@ async function executeSearchInbox(
   }
 
   try {
+    // Calculate search floor based on lookback window, NOT case creation time
+    // This ensures we find confirmation emails that arrived before the user created the case
+    const lookbackMs = lookbackDays * 24 * 60 * 60 * 1000
+    const searchFloor = Date.now() - lookbackMs
+
     const searchResult = await searchInboxForConfirmation({
       caseId: context.caseId,
       poNumber: caseData.po_number,
@@ -230,6 +290,7 @@ async function executeSearchInbox(
       supplierDomain: caseData.supplier_domain || null,
       optionalKeywords: [],
       lookbackDays,
+      searchAfterEpochMs: searchFloor, // ✅ FIX: Use lookback window instead of case creation time
     })
 
     // If we found a thread, fetch attachments
@@ -252,7 +313,100 @@ async function executeSearchInbox(
     // Include parsed data from PDFs if available
     const parsedData = searchResult.parsedData
     const hasParsedData = searchResult.hasParsedData
-    
+
+    // Persist when search_inbox parsed PDFs so Confirmation Details card can show them (agent often skips read_confirmation)
+    if (hasParsedData && parsedData) {
+      const caseId = context.caseId
+      debugLog({ location: 'chat/route.ts:executeSearchInbox', message: 'search_inbox persist start', data: { caseId, hasSO: !!parsedData.supplier_order_number, hasDate: !!parsedData.delivery_date, hasQty: parsedData.quantity != null } })
+      const pdfs = attachments.filter((a: { mime_type?: string }) => a.mime_type === 'application/pdf')
+      const evidence_attachment_id = pdfs.length > 0 ? (pdfs[0] as { attachment_id: string }).attachment_id : null
+      try {
+        const db = getDb()
+        const now = Date.now()
+        const lineNumber = Number.isFinite(parseInt(caseData.line_id, 10)) ? parseInt(caseData.line_id, 10) : null
+        const supplier_order_number = parsedData.supplier_order_number ?? null
+        const confirmed_delivery_date = parsedData.delivery_date ?? null
+        const confirmed_quantity = parsedData.quantity != null ? String(parsedData.quantity) : null
+        const existing = db.prepare(`SELECT id FROM confirmation_extractions WHERE case_id = ?`).get(caseId) as { id: string } | undefined
+        if (existing?.id) {
+          db.prepare(
+            `UPDATE confirmation_extractions SET
+              po_number = ?, line_number = ?, supplier_order_number = ?, confirmed_delivery_date = ?,
+              confirmed_quantity = ?, evidence_source = ?, evidence_attachment_id = ?, evidence_message_id = ?,
+              confidence = ?, raw_excerpt = ?, updated_at = ?
+            WHERE case_id = ?`
+          ).run(caseData.po_number, lineNumber, supplier_order_number, confirmed_delivery_date, confirmed_quantity, 'pdf', evidence_attachment_id, null, 90, null, now, caseId)
+        } else {
+          db.prepare(
+            `INSERT INTO confirmation_extractions (
+              id, case_id, po_number, line_number, supplier_order_number, confirmed_delivery_date,
+              confirmed_quantity, evidence_source, evidence_attachment_id, evidence_message_id,
+              confidence, raw_excerpt, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            randomUUID(),
+            caseId,
+            caseData.po_number,
+            lineNumber,
+            supplier_order_number,
+            confirmed_delivery_date,
+            confirmed_quantity,
+            'pdf',
+            evidence_attachment_id,
+            null,
+            90,
+            null,
+            now,
+            now
+          )
+        }
+        const c = getCase(caseId)
+        const meta = (c?.meta && typeof c.meta === 'object' ? { ...c.meta } : {}) as Record<string, unknown>
+        meta.parsed_best_fields_v1 = {
+          version: 'v1',
+          parsed_at: now,
+          evidence_source: 'pdf',
+          evidence_attachment_id,
+          evidence_message_id: null,
+          fields: {
+            supplier_order_number: { value: parsedData.supplier_order_number, confidence: 0.9, evidence_snippet: null, source: 'pdf' as const, attachment_id: evidence_attachment_id, message_id: null },
+            confirmed_delivery_date: { value: parsedData.delivery_date, confidence: 0.9, evidence_snippet: null, source: 'pdf' as const, attachment_id: evidence_attachment_id, message_id: null },
+            confirmed_quantity: { value: parsedData.quantity, confidence: 0.9, evidence_snippet: null, source: 'pdf' as const, attachment_id: evidence_attachment_id, message_id: null },
+          },
+          raw_excerpt: null,
+        }
+        updateCase(caseId, { meta })
+        addEvent(caseId, {
+          case_id: caseId,
+          timestamp: now,
+          event_type: 'PARSE_RESULT',
+          summary: 'Parsed confirmation fields (v1)',
+          evidence_refs_json: evidence_attachment_id ? { attachment_ids: [evidence_attachment_id] } : undefined,
+          meta_json: { version: 'v1', source: 'search_inbox', evidence_attachment_id },
+        })
+        debugLog({ location: 'chat/route.ts:executeSearchInbox', message: 'search_inbox persist done', data: { caseId, hasSO: !!supplier_order_number, hasDate: !!confirmed_delivery_date, hasQty: confirmed_quantity != null } })
+      } catch (persistErr) {
+        console.error('[AGENT_CHAT] executeSearchInbox persist failed:', persistErr)
+        debugLog({ location: 'chat/route.ts:executeSearchInbox', message: 'search_inbox persist error', data: { caseId: context.caseId, error: persistErr instanceof Error ? persistErr.message : String(persistErr) } })
+      }
+    }
+
+    // Extract expected quantity so the LLM can always display it accurately
+    let expectedQty: number | null = null
+    if (caseData.meta) {
+      try {
+        const meta = typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : caseData.meta
+        if (meta.po_line?.ordered_quantity) {
+          const qty = typeof meta.po_line.ordered_quantity === 'number'
+            ? meta.po_line.ordered_quantity
+            : parseFloat(String(meta.po_line.ordered_quantity))
+          if (Number.isFinite(qty) && qty > 0) {
+            expectedQty = qty
+          }
+        }
+      } catch (_e) { /* ignore */ }
+    }
+
     if (searchResult.classification === 'FOUND_CONFIRMED') {
       return JSON.stringify({
         status: 'found_confirmed',
@@ -265,6 +419,7 @@ async function executeSearchInbox(
         has_pdfs: finalHasPdfs,
         parsed_data: parsedData,
         has_parsed_data: hasParsedData,
+        expected_quantity: expectedQty,
       })
     } else if (searchResult.classification === 'FOUND_INCOMPLETE') {
       return JSON.stringify({
@@ -279,6 +434,7 @@ async function executeSearchInbox(
         has_pdfs: finalHasPdfs,
         parsed_data: parsedData,
         has_parsed_data: hasParsedData,
+        expected_quantity: expectedQty,
       })
     } else {
       return JSON.stringify({
@@ -291,12 +447,15 @@ async function executeSearchInbox(
         has_pdfs: finalHasPdfs,
         parsed_data: parsedData,
         has_parsed_data: hasParsedData,
+        expected_quantity: expectedQty,
       })
     }
   } catch (error) {
+    console.error('[AGENT_CHAT] ❌ Inbox search FAILED:', error)
     return JSON.stringify({
-      status: 'error',
+      status: 'inbox_unavailable',
       error: error instanceof Error ? error.message : 'Search failed',
+      summary: 'Inbox search failed due to a connection or authentication error. Do NOT conclude that no confirmations exist.',
     })
   }
 }
@@ -542,6 +701,112 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
       summaryParts.push(warnings.join(' '))
     }
 
+    // Persist parsed fields so Confirmation Details card can show them (fix: chat displayed data but card stayed missing)
+    const caseId = context.caseId
+    const evidence_attachment_id =
+      parsed.supplier_order_number.attachment_id ||
+      parsed.confirmed_delivery_date.attachment_id ||
+      parsed.supplier_confirmed_quantity.attachment_id ||
+      (pdfTexts.length > 0 ? pdfTexts[0].attachment_id : null)
+    // #region agent log
+    debugLog({ location: 'chat/route.ts:executeReadConfirmation', message: 'read_confirmation persist start', data: { caseId, hasSO: !!parsed.supplier_order_number.value, hasDate: !!parsed.confirmed_delivery_date.value, hasQty: parsed.supplier_confirmed_quantity.value != null } })
+    // #endregion
+    try {
+      const now = Date.now()
+      const lineNumber = Number.isFinite(parseInt(caseData.line_id, 10)) ? parseInt(caseData.line_id, 10) : null
+      const confidencePct = Math.round(
+        Math.max(
+          parsed.supplier_order_number.confidence,
+          parsed.confirmed_delivery_date.confidence,
+          parsed.supplier_confirmed_quantity.confidence
+        ) * 100
+      )
+      const supplier_order_number = parsed.supplier_order_number.value
+      const confirmed_delivery_date = parsed.confirmed_delivery_date.value
+      const confirmed_quantity = parsed.supplier_confirmed_quantity.value !== null ? String(parsed.supplier_confirmed_quantity.value) : null
+      const raw_excerpt = parsed.raw_excerpt ?? null
+
+      const existing = db.prepare(`SELECT id FROM confirmation_extractions WHERE case_id = ?`).get(caseId) as { id: string } | undefined
+      if (existing?.id) {
+        db.prepare(
+          `UPDATE confirmation_extractions SET
+            po_number = ?, line_number = ?, supplier_order_number = ?, confirmed_delivery_date = ?,
+            confirmed_quantity = ?, evidence_source = ?, evidence_attachment_id = ?, evidence_message_id = ?,
+            confidence = ?, raw_excerpt = ?, updated_at = ?
+          WHERE case_id = ?`
+        ).run(
+          caseData.po_number,
+          lineNumber,
+          supplier_order_number,
+          confirmed_delivery_date,
+          confirmed_quantity,
+          parsed.evidence_source,
+          evidence_attachment_id,
+          null,
+          confidencePct,
+          raw_excerpt,
+          now,
+          caseId
+        )
+      } else {
+        db.prepare(
+          `INSERT INTO confirmation_extractions (
+            id, case_id, po_number, line_number, supplier_order_number, confirmed_delivery_date,
+            confirmed_quantity, evidence_source, evidence_attachment_id, evidence_message_id,
+            confidence, raw_excerpt, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          randomUUID(),
+          caseId,
+          caseData.po_number,
+          lineNumber,
+          supplier_order_number,
+          confirmed_delivery_date,
+          confirmed_quantity,
+          parsed.evidence_source,
+          evidence_attachment_id,
+          null,
+          confidencePct,
+          raw_excerpt,
+          now,
+          now
+        )
+      }
+
+      const c = getCase(caseId)
+      const meta = (c?.meta && typeof c.meta === 'object' ? { ...c.meta } : {}) as Record<string, unknown>
+      meta.parsed_best_fields_v1 = {
+        version: 'v1',
+        parsed_at: now,
+        evidence_source: parsed.evidence_source,
+        evidence_attachment_id,
+        evidence_message_id: null,
+        fields: {
+          supplier_order_number: parsed.supplier_order_number,
+          confirmed_delivery_date: parsed.confirmed_delivery_date,
+          confirmed_quantity: parsed.supplier_confirmed_quantity,
+        },
+        raw_excerpt: parsed.raw_excerpt,
+      }
+      updateCase(caseId, { meta })
+      addEvent(caseId, {
+        case_id: caseId,
+        timestamp: now,
+        event_type: 'PARSE_RESULT',
+        summary: 'Parsed confirmation fields (v1)',
+        evidence_refs_json: evidence_attachment_id ? { attachment_ids: [evidence_attachment_id] } : undefined,
+        meta_json: { version: 'v1', evidence_attachment_id },
+      })
+      // #region agent log
+      debugLog({ location: 'chat/route.ts:executeReadConfirmation', message: 'read_confirmation persist done', data: { caseId } })
+      // #endregion
+    } catch (persistErr) {
+      console.error('[AGENT_CHAT] executeReadConfirmation persist failed:', persistErr)
+      // #region agent log
+      debugLog({ location: 'chat/route.ts:executeReadConfirmation', message: 'read_confirmation persist error', data: { caseId, error: persistErr instanceof Error ? persistErr.message : String(persistErr) } })
+      // #endregion
+    }
+
     return JSON.stringify({
       status: 'success',
       po_number: caseData.po_number,
@@ -551,6 +816,8 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
       warnings: warnings.length > 0 ? warnings : undefined,
       price_changed: parsed.price_changed || undefined,
       evidence_source: parsed.evidence_source,
+      expected_quantity: expectedQty,
+      expected_unit_price: expectedUnitPrice,
       summary: summaryParts.length > 0
         ? summaryParts.join('. ')
         : 'Could not extract confirmation fields from the PDF.',
@@ -569,37 +836,92 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
 // Execute draft_email tool
 async function executeDraftEmail(
   context: ToolContext,
-  args: { missing_fields: string[] }
+  _args: { missing_fields: string[] }
 ): Promise<string> {
-  const { caseData } = context
+  const { caseId, caseData } = context
 
   try {
-    const draft = generateConfirmationEmail({
+    const meta = (caseData.meta && typeof caseData.meta === 'object'
+      ? caseData.meta
+      : typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : {}
+    ) as Record<string, any>
+
+    // ── 1. Gather ALL confirmed values from every available source ──
+    // Source A: meta.parsed_best_fields_v1 (set by search_inbox / read_confirmation)
+    const parsed = meta.parsed_best_fields_v1 ?? {}
+
+    // Source B: confirmation_extractions table (most authoritative)
+    let dbExtraction: {
+      supplier_order_number: string | null
+      confirmed_delivery_date: string | null
+      confirmed_quantity: string | null
+    } | undefined
+    try {
+      const db = getDb()
+      dbExtraction = db.prepare(
+        `SELECT supplier_order_number, confirmed_delivery_date, confirmed_quantity
+         FROM confirmation_extractions WHERE case_id = ? LIMIT 1`
+      ).get(caseId) as typeof dbExtraction
+    } catch { /* non-fatal */ }
+
+    // Merge: DB wins over meta (DB is written later and may be more complete)
+    const confirmedSO = dbExtraction?.supplier_order_number ?? parsed.supplier_order_number ?? null
+    const confirmedDate = dbExtraction?.confirmed_delivery_date ?? parsed.confirmed_delivery_date ?? null
+    const confirmedQty = dbExtraction?.confirmed_quantity != null
+      ? Number(dbExtraction.confirmed_quantity)
+      : (parsed.confirmed_quantity != null ? Number(parsed.confirmed_quantity) : null)
+
+    // ── 2. Gather PO expected values ──
+    const poLine = meta.po_line ?? {}
+    const expectedQty = poLine.ordered_quantity != null ? Number(poLine.ordered_quantity) : null
+
+    // ── 3. Build supplierConfirmed — always populate with real data ──
+    // The email template in emailDraft.ts decides what's "missing" or "mismatched"
+    // by comparing these values. We must NOT null-out confirmed values just because
+    // the LLM listed a field in missing_fields — that would make the template think
+    // a confirmed field is missing and ask the supplier for it again.
+    const supplierConfirmed: EmailDraftContext['supplierConfirmed'] = {
+      supplierOrderNumber: { value: confirmedSO },
+      deliveryDate: { value: confirmedDate },
+      quantity: { value: confirmedQty },
+    }
+
+    const poExpected: EmailDraftContext['poExpected'] = {
+      deliveryDate: { value: null }, // PO expected delivery date not tracked yet
+      quantity: { value: expectedQty },
+    }
+
+    // ── 4. Generate email — template only includes missing/mismatched fields ──
+    const draftContext: EmailDraftContext = {
       poNumber: caseData.po_number,
       lineId: caseData.line_id,
       supplierName: caseData.supplier_name || null,
       supplierEmail: caseData.supplier_email || '',
-      missingFields: args.missing_fields,
-      context: {},
-    })
+      supplierConfirmed,
+      poExpected,
+    }
+
+    const draft = generateConfirmationEmail(draftContext)
 
     // Check for existing thread
-    const meta = (caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}) as Record<string, any>
     const threadId = meta.thread_id || null
-
     const isDemoMode = process.env.DEMO_MODE === 'true'
+
+    // If generateConfirmationEmail returned null (everything matches), produce a generic draft
+    const subject = draft?.subject ?? `PO ${caseData.po_number} – Confirmation needed`
+    const body = draft?.bodyText ?? `Hi,\n\nWe need confirmation for Purchase Order ${caseData.po_number}.\n\nThank you,\nProcurement Team`
 
     return JSON.stringify({
       status: 'draft_ready',
       po_number: caseData.po_number,
       line_id: caseData.line_id,
-      subject: draft.subject,
-      body: draft.bodyText,
+      subject,
+      body,
       to: caseData.supplier_email || '',
       thread_id: threadId,
       demo_mode: isDemoMode,
       demo_warning: isDemoMode ? 'Demo Mode: Email will be sent to test account instead of real supplier.' : null,
-      summary: `Draft ready to send to ${caseData.supplier_email || 'supplier'}. Subject: "${draft.subject}"`,
+      summary: `Draft ready to send to ${caseData.supplier_email || 'supplier'}. Subject: "${subject}"`,
     })
   } catch (error) {
     return JSON.stringify({

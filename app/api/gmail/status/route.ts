@@ -4,22 +4,11 @@ import { getGmailClient } from '@/src/lib/gmail/client'
 
 export const runtime = 'nodejs'
 
-// Debug logging helper - only runs at runtime, not during build
-const debugLog = (data: any) => {
-  if (process.env.NEXT_PHASE === 'phase-production-build' || process.env.NEXT_PHASE === 'phase-export') {
-    return // Skip during build
-  }
-  fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,timestamp:Date.now(),sessionId:'debug-session',runId:'run1'})}).catch(()=>{});
-}
-
 /**
  * GET /api/gmail/status
  * Check Gmail OAuth connection status (does NOT expose tokens)
  */
 export async function GET(request: NextRequest) {
-  // #region agent log
-  debugLog({location:'status/route.ts:11',message:'Status check entry',data:{},hypothesisId:'C'});
-  // #endregion
   try {
     // During build, return not connected to allow static generation
     if (process.env.NEXT_PHASE === 'phase-production-build' || process.env.NEXT_PHASE === 'phase-export') {
@@ -28,14 +17,8 @@ export async function GET(request: NextRequest) {
       })
     }
     const tokens = await getTokens()
-    // #region agent log
-    debugLog({location:'status/route.ts:14',message:'Tokens retrieved',data:{hasTokens:!!tokens,hasAccessToken:!!tokens?.access_token},hypothesisId:'C'});
-    // #endregion
 
     if (!tokens || !tokens.access_token) {
-      // #region agent log
-      debugLog({location:'status/route.ts:17',message:'Returning connected:false',data:{},hypothesisId:'C'});
-      // #endregion
       return NextResponse.json({
         connected: false,
       })

@@ -86,8 +86,8 @@ export async function POST(request: NextRequest) {
         const existingMeta = caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}
         const updatedMeta = mergeCaseMeta(existingMeta, {
           po_line: {
-            ordered_quantity: orderQty,
             ...(existingMeta.po_line && typeof existingMeta.po_line === 'object' ? existingMeta.po_line : {}),
+            ordered_quantity: orderQty,
           },
         })
         updates.meta = updatedMeta
@@ -203,10 +203,10 @@ export async function POST(request: NextRequest) {
         const existingMeta = caseData.meta && typeof caseData.meta === 'object' ? caseData.meta : {}
         const updatedMeta = mergeCaseMeta(existingMeta, {
           po_line: {
+            ...(existingMeta.po_line && typeof existingMeta.po_line === 'object' ? existingMeta.po_line : {}),
             ordered_quantity: orderedQuantity,
             po_number: poNumber,
             line_id: lineId,
-            ...(existingMeta.po_line && typeof existingMeta.po_line === 'object' ? existingMeta.po_line : {}),
             ...(uom !== undefined ? { uom } : {}),
           },
         })

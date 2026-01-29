@@ -25,6 +25,9 @@ export interface InboxSearchParams {
   supplierDomain?: string | null
   optionalKeywords?: string[]
   lookbackDays?: number
+  /** Absolute epoch-ms floor for the Gmail search. When set, overrides lookbackDays
+   *  so that confirmations sent before the agent started chasing are still found. */
+  searchAfterEpochMs?: number
 }
 
 export interface ExtractedFields {
@@ -80,7 +83,7 @@ export interface SearchResult {
  * For testing: Uses permissive subject-based query without from: filters
  */
 export function buildGmailQuery(params: InboxSearchParams): string {
-  const { poNumber, supplierEmail, supplierDomain, optionalKeywords, lookbackDays = 30 } = params
+  const { poNumber, supplierEmail, supplierDomain, optionalKeywords, lookbackDays = 30, searchAfterEpochMs } = params
   
   // For testing: Use permissive subject-based query without from: filters
   // This allows testing with self-sent mail
@@ -89,8 +92,41 @@ export function buildGmailQuery(params: InboxSearchParams): string {
   // Subject-based search for PO number (more permissive)
   queryParts.push(`subject:(${poNumber}) OR "PO ${poNumber}" OR "PO ${poNumber} Confirmation"`)
   
-  // Constrain to last N days (default 30 for testing)
-  queryParts.push(`newer_than:${lookbackDays}d`)
+  // 🔴 HARD-CODED TEST: Temporarily bypass date filter to prove code path
+  const BYPASS_DATE_FILTER = false // ✅ Set to false after applying fix to call sites
+
+  if (BYPASS_DATE_FILTER) {
+    console.log('[INBOX_SEARCH] ⚠️ BYPASSING DATE FILTER FOR TESTING (searchAfterEpochMs ignored)')
+    console.log('[INBOX_SEARCH] Original searchAfterEpochMs:', searchAfterEpochMs)
+    if (searchAfterEpochMs) {
+      console.log('[INBOX_SEARCH] Would have filtered with:', `after:${new Date(searchAfterEpochMs).toISOString().split('T')[0].replace(/-/g, '/')}`)
+    }
+    console.log('[INBOX_SEARCH] Now searching ALL emails (no date filter)')
+    // Don't add any date filter - search all time
+  } else {
+    // Use absolute date floor when available (covers pre-existing confirmations).
+    // Fall back to rolling lookback window otherwise.
+    if (searchAfterEpochMs) {
+      const d = new Date(searchAfterEpochMs)
+      const yyyy = d.getFullYear()
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      const afterFilter = `after:${yyyy}/${mm}/${dd}`
+
+      // PROOF: Log the filter being applied
+      console.log('[INBOX_SEARCH] Using searchAfterEpochMs filter:', {
+        searchAfterEpochMs,
+        searchAfterDate: d.toISOString(),
+        gmailFilter: afterFilter,
+        daysAgo: Math.floor((Date.now() - searchAfterEpochMs) / (24 * 60 * 60 * 1000)),
+      })
+
+      queryParts.push(afterFilter)
+    } else {
+      console.log('[INBOX_SEARCH] Using lookback window:', `newer_than:${lookbackDays}d`)
+      queryParts.push(`newer_than:${lookbackDays}d`)
+    }
+  }
   
   // Include optional keywords if provided (OR them together)
   if (optionalKeywords && optionalKeywords.length > 0) {
@@ -233,10 +269,11 @@ function scoreMessage(
 ): number {
   let score = 0
   
-  // Recency (more recent = higher score)
+  // Recency (more recent = higher score, but capped so old confirmations
+  // with strong supplier/keyword signals are not dropped from top candidates)
   const messageDate = parseInt(message.internalDate || '0', 10)
   const daysAgo = (Date.now() - messageDate) / (1000 * 60 * 60 * 24)
-  score += Math.max(0, 100 - daysAgo) // 100 points for today, decreasing by 1 per day
+  score += Math.max(10, 100 - daysAgo) // floor of 10 so age never fully eclipses content signals
   
   // Supplier-sent messages get higher score
   if (supplierEmail && fromEmail.toLowerCase().includes(supplierEmail.toLowerCase())) {
@@ -278,17 +315,29 @@ function scoreMessage(
  * Search Gmail inbox for supplier confirmation
  */
 export async function searchInboxForConfirmation(params: InboxSearchParams): Promise<SearchResult> {
-  const { caseId, poNumber, supplierEmail, supplierDomain } = params
-  
+  const { caseId, poNumber, supplierEmail, supplierDomain, searchAfterEpochMs } = params
+
+  // PROOF OF EXECUTION: Log function entry with all date parameters
+  console.log('[INBOX_SEARCH] ===== FUNCTION ENTRY =====')
+  console.log('[INBOX_SEARCH] searchAfterEpochMs:', searchAfterEpochMs)
+  if (searchAfterEpochMs) {
+    const d = new Date(searchAfterEpochMs)
+    console.log('[INBOX_SEARCH] searchAfterEpochMs as date:', d.toISOString())
+    console.log('[INBOX_SEARCH] Days ago from now:', Math.floor((Date.now() - searchAfterEpochMs) / (24 * 60 * 60 * 1000)))
+  }
+
   // Get case to check missing_fields
   const caseData = getCase(caseId)
   if (!caseData) {
     throw new Error(`Case ${caseId} not found`)
   }
-  
+
+  console.log('[INBOX_SEARCH] caseData.created_at:', caseData.created_at)
+  console.log('[INBOX_SEARCH] caseData.created_at as date:', new Date(caseData.created_at).toISOString())
+
   // Build query
   const query = buildGmailQuery(params)
-  
+
   // Log exact query string
   console.log(`[INBOX_SEARCH] Gmail query for PO ${poNumber}:`, query)
   
@@ -496,22 +545,88 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
       }
     }
     
-    // AUTOMATIC PDF PARSING: If we found a thread, retrieve and parse PDF attachments
+    // AUTOMATIC PDF PARSING: Try all top candidates until we find a thread with PDFs
     let parsedData: SearchResult['parsedData'] | undefined = undefined
     let hasParsedData = false
-    
-    if (topCandidates.length > 0 && topCandidates[0]?.threadId) {
-      const threadId = topCandidates[0].threadId
-      console.log(`[INBOX_SEARCH] Retrieving PDF attachments from thread ${threadId} for automatic parsing`)
-      
+    let pdfFoundInThreadId: string | null = null
+
+    if (topCandidates.length > 0) {
+      // Prioritize supplier-originated messages first (more likely to have confirmation PDFs)
+      const sortedCandidates = [...topCandidates].sort((a, b) => {
+        const aIsSupplier = supplierEmail
+          ? a.from.toLowerCase().includes(supplierEmail.toLowerCase())
+          : supplierDomain
+          ? a.from.toLowerCase().includes(supplierDomain.toLowerCase())
+          : false
+
+        const bIsSupplier = supplierEmail
+          ? b.from.toLowerCase().includes(supplierEmail.toLowerCase())
+          : supplierDomain
+          ? b.from.toLowerCase().includes(supplierDomain.toLowerCase())
+          : false
+
+        // Supplier messages first
+        if (aIsSupplier && !bIsSupplier) return -1
+        if (!aIsSupplier && bIsSupplier) return 1
+
+        // Then by score
+        return b.score - a.score
+      })
+
+      console.log(`[INBOX_SEARCH] Checking ${sortedCandidates.length} thread(s) for PDF attachments...`)
+
+      // Try each thread until we find one with PDFs
+      for (const candidate of sortedCandidates) {
+        if (!candidate.threadId) continue
+
+        const isSupplier = supplierEmail
+          ? candidate.from.toLowerCase().includes(supplierEmail.toLowerCase())
+          : supplierDomain
+          ? candidate.from.toLowerCase().includes(supplierDomain.toLowerCase())
+          : false
+
+        console.log(`[INBOX_SEARCH] Checking thread ${candidate.threadId} for PDFs (from: ${candidate.from}, supplier: ${isSupplier})`)
+
+        try {
+          // Retrieve PDF attachments from this thread
+          await retrievePdfAttachmentsFromThread({
+            caseId,
+            threadId: candidate.threadId,
+          })
+
+          // Check if we found any PDFs in this thread
+          const db = getDb()
+          const pdfCheck = db
+            .prepare(`
+              SELECT COUNT(*) as count
+              FROM attachments a
+              INNER JOIN messages m ON m.message_id = a.message_id
+              WHERE m.case_id = ?
+                AND m.thread_id = ?
+                AND a.mime_type = 'application/pdf'
+            `)
+            .get(caseId, candidate.threadId) as { count: number }
+
+          if (pdfCheck.count > 0) {
+            console.log(`[INBOX_SEARCH] ✓ Found ${pdfCheck.count} PDF(s) in thread ${candidate.threadId}, using this thread for parsing`)
+            pdfFoundInThreadId = candidate.threadId
+            break // Stop on first thread with PDFs
+          } else {
+            console.log(`[INBOX_SEARCH] ✗ No PDFs in thread ${candidate.threadId}, trying next...`)
+          }
+        } catch (err) {
+          console.warn(`[INBOX_SEARCH] Failed to retrieve PDFs from thread ${candidate.threadId}:`, err)
+          continue
+        }
+      }
+    }
+
+    // Now parse PDFs from the thread where we found attachments
+    if (pdfFoundInThreadId) {
+      console.log(`[INBOX_SEARCH] Parsing PDFs from thread ${pdfFoundInThreadId}`)
+
       try {
-        // Retrieve PDF attachments from the thread
-        await retrievePdfAttachmentsFromThread({
-          caseId,
-          threadId,
-        })
-        
-        // Get PDF attachments with binary data
+        // Get PDF attachments with binary data from the selected thread
         const db = getDb()
         const rawAttachments = db
           .prepare(`
@@ -519,10 +634,11 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
             FROM attachments a
             INNER JOIN messages m ON m.message_id = a.message_id
             WHERE m.case_id = ?
+              AND m.thread_id = ?
               AND a.mime_type = 'application/pdf'
             ORDER BY m.received_at DESC
           `)
-          .all(caseId) as Array<{
+          .all(caseId, pdfFoundInThreadId) as Array<{
             attachment_id: string
             filename: string | null
             text_extract: string | null
@@ -705,7 +821,7 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
       hasParsedData,
     }
   } catch (error) {
-    console.error('Error searching Gmail inbox:', error)
+    console.error('[INBOX_SEARCH] ❌ INBOX SEARCH FAILED — agent will not have inbox data:', error)
     
     // Log error event
     addEvent(caseId, {

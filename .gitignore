@@ -40,6 +40,9 @@ next-env.d.ts
 *.db-shm
 *.db-wal
 
+# local storage (for dev token storage)
+.local-storage
+
 
 
 
