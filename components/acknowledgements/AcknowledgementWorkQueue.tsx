@@ -9,6 +9,7 @@ import { Search, X } from 'lucide-react'
 interface AcknowledgementWorkQueueProps {
   activeCaseId: string | null
   onSelectCase: (caseId: string, po: UnconfirmedPO) => void
+  onQueueLoaded?: (queue: UnconfirmedPO[]) => void
 }
 
 // Map canonical field keys to compact display tokens
@@ -95,6 +96,7 @@ function countMissingFields(record: ConfirmationRecord | null | undefined): numb
 export function AcknowledgementWorkQueue({
   activeCaseId,
   onSelectCase,
+  onQueueLoaded,
 }: AcknowledgementWorkQueueProps) {
   const { normalizedRows } = useWorkspace()
   const [unconfirmedPOs, setUnconfirmedPOs] = useState<UnconfirmedPO[]>([])
@@ -267,7 +269,8 @@ export function AcknowledgementWorkQueue({
     })
     
     setUnconfirmedPOs(sorted)
-  }, [normalizedRows, confirmationRecords])
+    onQueueLoaded?.(sorted)
+  }, [normalizedRows, confirmationRecords, onQueueLoaded])
 
   const needsCount = unconfirmedPOs.length
 

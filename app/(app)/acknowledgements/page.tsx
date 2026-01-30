@@ -200,6 +200,16 @@ export default function AcknowledgementsPage() {
     window.dispatchEvent(new CustomEvent('confirmationRecordUpdated'))
   }, [activeCaseId])
 
+  // Auto-select first PO when queue loads and nothing is selected
+  const handleQueueLoaded = useCallback((queue: UnconfirmedPO[]) => {
+    if (!activeCaseId && queue.length > 0) {
+      const first = queue[0]
+      const key = `${first.po_id}-${first.line_id || ''}`
+      console.log('[ACK_PAGE] Auto-selecting first PO:', key)
+      handleSelectCase(key, first)
+    }
+  }, [activeCaseId, handleSelectCase])
+
   // Derive supplier email from matching row
   const supplierEmail = activePO ? (() => {
     const matchingRow = normalizedRows?.find(row => {
@@ -231,6 +241,7 @@ export default function AcknowledgementsPage() {
           onAgentResult={handleAgentResult}
           onRunningChange={setIsRunning}
           onCaseUpdated={handleCaseUpdated}
+          onQueueLoaded={handleQueueLoaded}
         />
       </AcknowledgementChatProvider>
     </AgentStateProvider>
@@ -251,6 +262,7 @@ function AcknowledgementsPageInner({
   onAgentResult,
   onRunningChange,
   onCaseUpdated,
+  onQueueLoaded,
 }: {
   normalizedRows: any[]
   workQueueRefreshKey: number
@@ -265,6 +277,7 @@ function AcknowledgementsPageInner({
   onAgentResult: (result: AgentResult | null) => void
   onRunningChange: (running: boolean) => void
   onCaseUpdated: () => void
+  onQueueLoaded: (queue: UnconfirmedPO[]) => void
 }) {
   const { setTotalPOs, setCSVSource, addConfirmedPO } = useAgentState()
   const { filename } = useWorkspace()
@@ -434,6 +447,7 @@ function AcknowledgementsPageInner({
           <AcknowledgementWorkQueue
             activeCaseId={activeCaseKey}
             onSelectCase={onSelectCase}
+            onQueueLoaded={onQueueLoaded}
           />
         </div>
 
