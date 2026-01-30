@@ -690,6 +690,10 @@ export function AgentWorkspace({
     const requestBody = {
       message: userMessage,
       caseId,
+      poNumber,
+      lineId,
+      supplierName,
+      supplierEmail,
       conversationHistory: updatedHistory.slice(-10), // Keep last 10 messages for context
     }
     

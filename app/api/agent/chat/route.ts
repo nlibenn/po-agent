@@ -1433,7 +1433,7 @@ export async function POST(request: NextRequest) {
       conversationHistoryLength: body.conversationHistory?.length || 0,
     })
     
-    const { message, caseId: providedCaseId, conversationHistory = [] } = body
+    const { message, caseId: providedCaseId, poNumber: clientPoNumber, lineId: clientLineId, supplierName: clientSupplierName, supplierEmail: clientSupplierEmail, conversationHistory = [] } = body
 
     // Validate message
     if (!message || typeof message !== 'string') {
@@ -1482,6 +1482,31 @@ export async function POST(request: NextRequest) {
       }
     }
     
+    // Fallback: use client-provided PO context when SQLite lookup fails (Vercel ephemeral /tmp)
+    if (!caseData && clientPoNumber) {
+      console.log('[AGENT_CHAT] Using client-provided PO context as fallback:', { clientPoNumber, clientLineId })
+      const now = Date.now()
+      caseData = {
+        case_id: providedCaseId || `fallback-${now}`,
+        po_number: clientPoNumber,
+        line_id: clientLineId || '',
+        supplier_name: clientSupplierName || null,
+        supplier_email: clientSupplierEmail || null,
+        supplier_domain: clientSupplierEmail ? clientSupplierEmail.split('@')[1] : null,
+        missing_fields: ['supplier_reference', 'delivery_date', 'quantity'],
+        state: 'INBOX_LOOKUP',
+        status: 'STILL_AMBIGUOUS',
+        touch_count: 0,
+        last_action_at: now,
+        created_at: now,
+        updated_at: now,
+        next_check_at: null,
+        last_inbox_check_at: null,
+        meta: {},
+      }
+      resolvedCaseId = caseData.case_id
+    }
+
     // If no case found and no caseId provided, try extracting PO from message
     if (!caseData) {
       const poNumbers = extractPoNumbersFromMessage(message)
