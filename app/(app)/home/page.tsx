@@ -1,23 +1,12 @@
 'use client'
 
 import { useState, useEffect, Suspense } from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { formatRelativeTime } from '@/src/lib/utils/relativeTime'
 import { getDriveSummary } from '@/src/lib/driveStorage'
 import { ResetEverythingButton } from '@/components/ResetEverythingButton'
 
-interface GmailStatus {
-  connected: boolean
-  email?: string
-  scopes?: string[]
-}
-
 function HomePageContent() {
-  const searchParams = useSearchParams()
-  const router = useRouter()
-  const [gmailStatus, setGmailStatus] = useState<GmailStatus | null>(null)
-  const [isCheckingGmail, setIsCheckingGmail] = useState(true)
   const [showComingSoonModal, setShowComingSoonModal] = useState(false)
   const [driveSummary, setDriveSummary] = useState<{
     totalDocuments: number
@@ -25,51 +14,6 @@ function HomePageContent() {
   }>({ totalDocuments: 0, lastUpload: null })
 
   useEffect(() => {
-    const checkGmailStatus = async () => {
-      // Check for success parameter from OAuth callback
-      const gmailConnected = searchParams?.get('gmail_connected') === '1'
-      
-      // If we have success param, optimistically set connected state
-      if (gmailConnected) {
-        console.log('[HOME] Detected gmail_connected=1, setting optimistic connected state')
-        setGmailStatus({ connected: true })
-        setIsCheckingGmail(false)
-        
-        // Remove success parameter from URL
-        const newUrl = new URL(window.location.href)
-        newUrl.searchParams.delete('gmail_connected')
-        router.replace(newUrl.pathname + newUrl.search)
-        
-        // Verify with backend after a delay — only update if
-        // the server confirms connected (don't downgrade on KV race)
-        setTimeout(async () => {
-          try {
-            const response = await fetch('/api/gmail/status')
-            const data: GmailStatus = await response.json()
-            if (data.connected) {
-              setGmailStatus(data)
-            }
-          } catch (error) {
-            console.error('Error verifying Gmail status:', error)
-          }
-        }, 2000)
-        return
-      }
-
-      try {
-        const response = await fetch('/api/gmail/status')
-        const data: GmailStatus = await response.json()
-        setGmailStatus(data)
-      } catch (error) {
-        console.error('Error checking Gmail status:', error)
-        setGmailStatus({ connected: false })
-      } finally {
-        setIsCheckingGmail(false)
-      }
-    }
-
-    checkGmailStatus()
-
     // Load Drive summary
     const loadDriveSummary = () => {
       const summary = getDriveSummary()
@@ -99,32 +43,11 @@ function HomePageContent() {
       window.removeEventListener('storage', handleStorageChange)
       window.removeEventListener('driveStorageChanged', handleCustomStorageChange)
     }
-  }, [searchParams, router])
-
-  const handleConnectGmail = () => {
-    window.location.href = '/api/gmail/auth'
-  }
+  }, [])
 
   return (
     <div className="h-full">
       <div className="max-w-2xl mx-auto px-8 py-12">
-        {/* Gmail Connection Banner */}
-        {!isCheckingGmail && gmailStatus && !gmailStatus.connected && (
-          <div className="mb-6 px-4 py-3 rounded-xl bg-surface-tint border border-primary/20 flex items-center justify-between">
-            <div className="flex-1">
-              <p className="text-sm text-primary-deep">
-                Connect your Gmail account to enable supplier outreach and email features.
-              </p>
-            </div>
-            <button
-              onClick={handleConnectGmail}
-              className="ml-4 px-4 py-2 rounded-lg text-sm font-medium text-surface bg-primary hover:bg-primary-strong transition-colors shadow-sm flex-shrink-0"
-            >
-              Connect Gmail
-            </button>
-          </div>
-        )}
-
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-2xl font-semibold text-text mb-2">Overview</h1>
