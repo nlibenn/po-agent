@@ -358,7 +358,7 @@ async function executeSearchInbox(
     if (hasParsedData && parsedData) {
       const caseId = context.caseId
       debugLog({ location: 'chat/route.ts:executeSearchInbox', message: 'search_inbox persist start', data: { caseId, hasSO: !!parsedData.supplier_order_number, hasDate: !!parsedData.delivery_date, hasQty: parsedData.quantity != null } })
-      const pdfs = attachments.filter((a: { mime_type?: string }) => a.mime_type === 'application/pdf')
+      const pdfs = attachments.filter((a) => a.mime_type === 'application/pdf')
       const evidence_attachment_id = pdfs.length > 0 ? (pdfs[0] as { attachment_id: string }).attachment_id : null
       try {
         const db = getDb()
@@ -421,7 +421,7 @@ async function executeSearchInbox(
           timestamp: now,
           event_type: 'PARSE_RESULT',
           summary: 'Parsed confirmation fields (v1)',
-          evidence_refs_json: evidence_attachment_id ? { attachment_ids: [evidence_attachment_id] } : undefined,
+          evidence_refs_json: evidence_attachment_id ? { attachment_ids: [evidence_attachment_id] } : null,
           meta_json: { version: 'v1', source: 'search_inbox', evidence_attachment_id },
         })
         debugLog({ location: 'chat/route.ts:executeSearchInbox', message: 'search_inbox persist done', data: { caseId, hasSO: !!supplier_order_number, hasDate: !!confirmed_delivery_date, hasQty: confirmed_quantity != null } })
@@ -834,7 +834,7 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
         timestamp: now,
         event_type: 'PARSE_RESULT',
         summary: 'Parsed confirmation fields (v1)',
-        evidence_refs_json: evidence_attachment_id ? { attachment_ids: [evidence_attachment_id] } : undefined,
+        evidence_refs_json: evidence_attachment_id ? { attachment_ids: [evidence_attachment_id] } : null,
         meta_json: { version: 'v1', evidence_attachment_id },
       })
       // #region agent log

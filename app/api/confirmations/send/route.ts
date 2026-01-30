@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { searchInboxForConfirmation, type SearchResult } from '@/src/lib/supplier-agent/inboxSearch'
 import { sendNewEmail, sendReplyInThread } from '@/src/lib/supplier-agent/outreach'
-import { generateConfirmationEmail } from '@/src/lib/supplier-agent/emailDraft'
+import { generateConfirmationEmailLegacy } from '@/src/lib/supplier-agent/emailDraft'
 import { getCase, updateCase, addEvent, addMessage } from '@/src/lib/supplier-agent/store'
 import { CaseState, CaseStatus } from '@/src/lib/supplier-agent/types'
 import { transitionCase, TransitionEvent } from '@/src/lib/supplier-agent/stateMachine'
@@ -155,7 +155,7 @@ export async function POST(request: NextRequest) {
     if (subject && bodyText) {
       emailDraft = { subject, bodyText }
     } else {
-      emailDraft = generateConfirmationEmail({
+      emailDraft = generateConfirmationEmailLegacy({
         poNumber,
         lineId,
         supplierName: supplierName || caseData.supplier_name,
@@ -408,7 +408,7 @@ export async function POST(request: NextRequest) {
             sentBodyText = bodyText
           } else {
             // Regenerate email for only remaining missing fields
-            const replyEmail = generateConfirmationEmail({
+            const replyEmail = generateConfirmationEmailLegacy({
               poNumber,
               lineId,
               supplierName: supplierName || caseData.supplier_name,

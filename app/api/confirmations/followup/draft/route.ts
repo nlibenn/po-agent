@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getCase, listMessages, listAttachmentsForCase } from '@/src/lib/supplier-agent/store'
-import { generateConfirmationEmail } from '@/src/lib/supplier-agent/emailDraft'
+import { generateConfirmationEmailLegacy } from '@/src/lib/supplier-agent/emailDraft'
 import { getDb } from '@/src/lib/supplier-agent/storage/sqlite'
 
 export const runtime = 'nodejs'
@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
     // This allows the UI to show a draft even if all fields are found
     if (missingFields.length === 0) {
       // Generate a minimal follow-up draft anyway (acknowledgment or general follow-up)
-      const emailDraft = generateConfirmationEmail({
+      const emailDraft = generateConfirmationEmailLegacy({
         poNumber: caseData.po_number,
         lineId: caseData.line_id,
         supplierName: caseData.supplier_name || null,
@@ -125,7 +125,7 @@ export async function POST(request: NextRequest) {
     originalSubject = latestInbound?.subject || null
 
     // Generate email draft using resolved values (fixes wrong-case bug)
-    const emailDraft = generateConfirmationEmail({
+    const emailDraft = generateConfirmationEmailLegacy({
       poNumber: resolvedPoNumber,
       lineId: resolvedLineId,
       supplierName: resolvedSupplierName,

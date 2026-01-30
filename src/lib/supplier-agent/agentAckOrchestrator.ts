@@ -10,7 +10,7 @@ import 'server-only'
 import { getCase, addEvent, listEvents, listMessages, listAttachmentsForCase, updateCase, addMessage } from './store'
 import { searchInboxForConfirmation } from './inboxSearch'
 import { retrievePdfAttachmentsFromThread } from './emailAttachments'
-import { generateConfirmationEmail } from './emailDraft'
+import { generateConfirmationEmailLegacy } from './emailDraft'
 import { sendNewEmail, sendReplyInThread } from './outreach'
 import { parseConfirmationFieldsV1 } from './parseConfirmationFields'
 import { extractTextFromPdfBase64 } from './pdfTextExtraction'
@@ -923,7 +923,7 @@ function generateDraftForDecision(
     return undefined
   }
 
-  const emailDraft = generateConfirmationEmail({
+  const emailDraft = generateConfirmationEmailLegacy({
     poNumber: caseData.po_number,
     lineId: caseData.line_id,
     supplierName: caseData.supplier_name || null,
