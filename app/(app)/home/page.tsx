@@ -40,16 +40,19 @@ function HomePageContent() {
         newUrl.searchParams.delete('gmail_connected')
         router.replace(newUrl.pathname + newUrl.search)
         
-        // Still verify with backend after a short delay
+        // Verify with backend after a delay — only update if
+        // the server confirms connected (don't downgrade on KV race)
         setTimeout(async () => {
           try {
             const response = await fetch('/api/gmail/status')
             const data: GmailStatus = await response.json()
-            setGmailStatus(data)
+            if (data.connected) {
+              setGmailStatus(data)
+            }
           } catch (error) {
             console.error('Error verifying Gmail status:', error)
           }
-        }, 500)
+        }, 2000)
         return
       }
 

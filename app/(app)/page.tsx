@@ -1,39 +1,18 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
-interface GmailStatus {
-  connected: boolean
-  email?: string
-  scopes?: string[]
-}
-
-export default function HomePage() {
+/**
+ * Root page inside (app) layout — just redirects to /home.
+ * Auth gating is handled by AuthGate in the layout; no need
+ * to duplicate the gmail status check here.
+ */
+export default function RootPage() {
   const router = useRouter()
-  const [isChecking, setIsChecking] = useState(true)
 
   useEffect(() => {
-    const checkGmailStatus = async () => {
-      try {
-        const response = await fetch('/api/gmail/status')
-        const data: GmailStatus = await response.json()
-        
-        if (data.connected) {
-          router.replace('/home')
-        } else {
-          router.replace('/login')
-        }
-      } catch (error) {
-        console.error('Error checking Gmail status:', error)
-        // On error, redirect to login
-        router.replace('/login')
-      } finally {
-        setIsChecking(false)
-      }
-    }
-
-    checkGmailStatus()
+    router.replace('/home')
   }, [router])
 
   return (
