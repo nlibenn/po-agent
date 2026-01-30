@@ -8,6 +8,7 @@ function LoginContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const hasError = searchParams.get('error') === '1'
+  const oauthError = searchParams.get('oauth_error') // DEBUG: shows actual OAuth error
   const gmailConnected = searchParams.get('gmail_connected') === '1'
   const [isLoading, setIsLoading] = useState(false)
 
@@ -88,6 +89,11 @@ function LoginContent() {
                 <p className="text-sm text-danger">
                   There was an issue connecting your Gmail account. Please try again.
                 </p>
+                {oauthError && (
+                  <p className="text-xs text-danger/70 mt-1 font-mono break-all">
+                    Debug: {decodeURIComponent(oauthError)}
+                  </p>
+                )}
               </div>
             )}
 

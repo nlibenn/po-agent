@@ -45,9 +45,11 @@ export async function GET(request: NextRequest) {
     // Redirect to /home with success parameter after successful authentication
     return NextResponse.redirect(new URL('/home?gmail_connected=1', request.url))
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
     console.error('[GMAIL_CALLBACK] Full error:', error)
     console.error('[GMAIL_CALLBACK] Error stack:', error instanceof Error ? error.stack : 'No stack trace')
-    // Redirect to login with error parameter
-    return NextResponse.redirect(new URL('/login?error=1', request.url))
+    // DEBUG: Pass error detail to login page for diagnosis
+    const errorParam = encodeURIComponent(errMsg.slice(0, 200))
+    return NextResponse.redirect(new URL(`/login?error=1&oauth_error=${errorParam}`, request.url))
   }
 }
