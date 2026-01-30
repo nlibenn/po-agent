@@ -116,6 +116,7 @@ export default function AcknowledgementsPage() {
 
   // Handle case selection
   const handleSelectCase = useCallback(async (caseKey: string, po: UnconfirmedPO) => {
+    console.log('[ACK_PAGE] handleSelectCase called, key:', caseKey, 'po:', po.po_id)
     // caseKey is "PO-LINE" format, need to resolve to DB case_id
     setActiveCaseKey(caseKey)
     setActivePO(po)
@@ -126,6 +127,7 @@ export default function AcknowledgementsPage() {
       const poRow = normalizedRows.find(
         row => row.po_id === po.po_id && row.line_id === (po.line_id || '')
       )
+      console.log('[ACK_PAGE] Resolving case, poRow found:', !!poRow)
 
       const response = await fetch('/api/cases/resolve', {
         method: 'POST',
@@ -141,7 +143,7 @@ export default function AcknowledgementsPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        console.error('Failed to resolve case:', errorData.error || response.status)
+        console.error('[ACK_PAGE] Failed to resolve case:', errorData.error || response.status)
         setActiveCaseId(null)
         return
       }
@@ -149,13 +151,14 @@ export default function AcknowledgementsPage() {
       const data = await response.json()
 
       if (data.ok && data.caseId) {
+        console.log('[ACK_PAGE] Case resolved, caseId:', data.caseId)
         setActiveCaseId(data.caseId)
       } else {
-        console.error('Invalid resolve response:', data)
+        console.error('[ACK_PAGE] Invalid resolve response:', data)
         setActiveCaseId(null)
       }
     } catch (error) {
-      console.error('Error resolving case:', error)
+      console.error('[ACK_PAGE] Error resolving case:', error)
       setActiveCaseId(null)
     }
   }, [normalizedRows])
@@ -201,20 +204,26 @@ export default function AcknowledgementsPage() {
   }, [activeCaseId])
 
   // Auto-select first PO when queue loads and nothing is selected.
-  // Use a ref for activeCaseId so the callback identity stays stable
-  // and doesn't re-trigger the work queue effect.
+  // Use refs so the callback identity stays stable and doesn't
+  // re-trigger the work queue effect.
   const activeCaseIdRef = useRef(activeCaseId)
   activeCaseIdRef.current = activeCaseId
+  const activeCaseKeyRef = useRef(activeCaseKey)
+  activeCaseKeyRef.current = activeCaseKey
+  const handleSelectCaseRef = useRef(handleSelectCase)
+  handleSelectCaseRef.current = handleSelectCase
 
   const handleQueueLoaded = useCallback((queue: UnconfirmedPO[]) => {
-    console.log('[ACK_PAGE] onQueueLoaded fired, length:', queue.length, 'activeCaseId:', activeCaseIdRef.current)
-    if (!activeCaseIdRef.current && queue.length > 0) {
+    console.log('[ACK_PAGE] onQueueLoaded fired, length:', queue.length, 'activeCaseId:', activeCaseIdRef.current, 'activeCaseKey:', activeCaseKeyRef.current)
+    // Guard: skip if anything is already selected (either DB id or UI key)
+    if (activeCaseIdRef.current || activeCaseKeyRef.current) return
+    if (queue.length > 0) {
       const first = queue[0]
       const key = `${first.po_id}-${first.line_id || ''}`
       console.log('[ACK_PAGE] Auto-selecting first PO:', key)
-      handleSelectCase(key, first)
+      handleSelectCaseRef.current(key, first)
     }
-  }, [handleSelectCase])
+  }, []) // No deps — all values read from refs
 
   // Derive supplier email from matching row
   const supplierEmail = activePO ? (() => {

@@ -237,7 +237,9 @@ export function AcknowledgementWorkQueue({
 
   // Compute unconfirmed POs with new sorting logic
   useEffect(() => {
+    console.log('[WORK_QUEUE] Effect fired, normalizedRows:', normalizedRows?.length ?? 0, 'confirmationRecords size:', confirmationRecords.size)
     if (!normalizedRows || normalizedRows.length === 0) {
+      console.log('[WORK_QUEUE] No normalizedRows, setting empty queue')
       setUnconfirmedPOs([])
       return
     }
@@ -272,7 +274,8 @@ export function AcknowledgementWorkQueue({
     })
     
     setUnconfirmedPOs(sorted)
-    console.log('[WORK_QUEUE] Queue computed, length:', sorted.length)
+    console.log('[WORK_QUEUE] Queue computed, length:', sorted.length, 'normalizedRows:', normalizedRows?.length, 'confirmationRecords size:', confirmationRecords.size)
+    console.log('[WORK_QUEUE] onQueueLoadedRef.current exists:', !!onQueueLoadedRef.current)
     onQueueLoadedRef.current?.(sorted)
   }, [normalizedRows, confirmationRecords])
 

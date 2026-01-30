@@ -16,8 +16,8 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     
-    // Validate required fields
-    if (!body.poNumber || !body.lineId) {
+    // Validate required fields (lineId can be empty string for single-line POs)
+    if (!body.poNumber || body.lineId === undefined || body.lineId === null) {
       return NextResponse.json(
         { error: 'Missing required fields: poNumber, lineId' },
         { status: 400 }

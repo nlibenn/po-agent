@@ -107,10 +107,12 @@ export function useBuyerWorkspace(): UseBuyerWorkspaceReturn {
   const loadFromStorage = useCallback(async () => {
     // PRIMARY SOURCE: Load from Drive storage (single source of truth)
     const driveDoc = getLatestPODocument()
+    console.log('[WORKSPACE] loadFromStorage: driveDoc exists:', !!driveDoc, 'parsedRows:', driveDoc?.parsedRows?.length ?? 0)
     if (driveDoc && driveDoc.parsedRows) {
       // Always re-normalize to ensure consistency
       const { normalizeRow } = await import('@/src/lib/po')
       const normalized = driveDoc.parsedRows.map((row: Record<string, any>) => normalizeRow(row))
+      console.log('[WORKSPACE] Setting normalizedRows, count:', normalized.length)
       setRows(driveDoc.parsedRows)
       setNormalizedRows(normalized)
       setFilename(driveDoc.name)
