@@ -3,7 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   experimental: {
     esmExternals: 'loose',
-    serverComponentsExternalPackages: ['pdfjs-dist'],
+    serverComponentsExternalPackages: ['pdfjs-dist', 'better-sqlite3'],
   },
   // Prevent webpack chunk resolution issues in dev mode
   webpack: (config, { dev, isServer }) => {
@@ -22,6 +22,9 @@ const nextConfig = {
         ...(Array.isArray(existingExternals) ? existingExternals : [existingExternals]),
         ({ request }, callback) => {
           if (request && (request === 'pdfjs-dist' || request.startsWith('pdfjs-dist/'))) {
+            return callback(null, `commonjs ${request}`)
+          }
+          if (request && request === 'better-sqlite3') {
             return callback(null, `commonjs ${request}`)
           }
           callback()
