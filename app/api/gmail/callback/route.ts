@@ -8,48 +8,37 @@ export const runtime = 'nodejs'
  * Handle OAuth callback from Google, exchange code for tokens, and store them
  */
 export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams
+  const code = searchParams.get('code')
+  const googleError = searchParams.get('error')
+
+  if (googleError) {
+    console.error('[GMAIL_CALLBACK] OAuth error from Google:', googleError)
+    const msg = encodeURIComponent(`Google OAuth error: ${googleError}`)
+    return NextResponse.redirect(new URL(`/login?error=${msg}`, request.url))
+  }
+
+  if (!code) {
+    console.error('[GMAIL_CALLBACK] No authorization code received')
+    const msg = encodeURIComponent('No authorization code received from Google')
+    return NextResponse.redirect(new URL(`/login?error=${msg}`, request.url))
+  }
+
   try {
-    console.log('[GMAIL_CALLBACK] Starting OAuth callback')
-    console.log('[GMAIL_CALLBACK] URL:', request.url)
-    
-    const searchParams = request.nextUrl.searchParams
-    const code = searchParams.get('code')
-    const error = searchParams.get('error')
-    
-    console.log('[GMAIL_CALLBACK] Code exists:', !!code)
-    console.log('[GMAIL_CALLBACK] Error param:', error)
-    
-    if (error) {
-      console.error('[GMAIL_CALLBACK] OAuth error from Google:', error)
-      // Redirect to login with error parameter
-      return NextResponse.redirect(new URL('/login?error=1', request.url))
-    }
-
-    if (!code) {
-      console.error('[GMAIL_CALLBACK] No authorization code received')
-      // Redirect to login with error parameter
-      return NextResponse.redirect(new URL('/login?error=1', request.url))
-    }
-
-    // Before token exchange
     console.log('[GMAIL_CALLBACK] Exchanging code for tokens...')
     console.log('[GMAIL_CALLBACK] Client ID exists:', !!process.env.GOOGLE_CLIENT_ID)
     console.log('[GMAIL_CALLBACK] Client Secret exists:', !!process.env.GOOGLE_CLIENT_SECRET)
     console.log('[GMAIL_CALLBACK] Redirect URI:', process.env.GOOGLE_REDIRECT_URI)
 
-    // Exchange code for tokens
     await exchangeCodeForTokens(code)
 
-    console.log('[GMAIL_CALLBACK] Gmail callback succeeded')
-
-    // Redirect to /home with success parameter after successful authentication
-    return NextResponse.redirect(new URL('/home?gmail_connected=1', request.url))
+    console.log('[GMAIL_CALLBACK] Token exchange and save succeeded')
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
     console.error('[GMAIL_CALLBACK] Full error:', error)
     console.error('[GMAIL_CALLBACK] Error stack:', error instanceof Error ? error.stack : 'No stack trace')
-    // DEBUG: Pass error detail to login page for diagnosis
-    const errorParam = encodeURIComponent(errMsg.slice(0, 200))
-    return NextResponse.redirect(new URL(`/login?error=1&oauth_error=${errorParam}`, request.url))
+    const errorParam = encodeURIComponent(errMsg.slice(0, 300))
+    return NextResponse.redirect(new URL(`/login?error=${errorParam}`, request.url))
   }
 }

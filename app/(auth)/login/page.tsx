@@ -7,8 +7,7 @@ import { LoginBackdrop } from '@/components/auth/LoginBackdrop'
 function LoginContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
-  const hasError = searchParams.get('error') === '1'
-  const oauthError = searchParams.get('oauth_error') // DEBUG: shows actual OAuth error
+  const errorMsg = searchParams.get('error')
   const gmailConnected = searchParams.get('gmail_connected') === '1'
   const [isLoading, setIsLoading] = useState(false)
 
@@ -84,16 +83,14 @@ function LoginContent() {
             </div>
 
             {/* Error Message */}
-            {hasError && (
+            {errorMsg && (
               <div className="px-4 py-3 rounded-xl bg-danger/12 border border-danger/25">
                 <p className="text-sm text-danger">
                   There was an issue connecting your Gmail account. Please try again.
                 </p>
-                {oauthError && (
-                  <p className="text-xs text-danger/70 mt-1 font-mono break-all">
-                    Debug: {decodeURIComponent(oauthError)}
-                  </p>
-                )}
+                <p className="text-xs text-danger/70 mt-1 font-mono break-all">
+                  Debug: {errorMsg}
+                </p>
               </div>
             )}
 
