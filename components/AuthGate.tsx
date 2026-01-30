@@ -27,52 +27,32 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       const gmailConnected = searchParams?.get('gmail_connected') === '1'
       
       if (gmailConnected) {
-        // OAuth just succeeded - wait a moment for token storage to complete, then check status
-        console.log('[AUTH_GATE] Detected gmail_connected=1, waiting for token storage...')
-        await new Promise(resolve => setTimeout(resolve, 500)) // Wait 500ms for token storage
+        // OAuth callback just redirected here — trust the server-side
+        // redirect and grant immediate access. This avoids a race where
+        // KV hasn't propagated the token yet and /api/gmail/status
+        // returns connected: false, causing a redirect loop.
+        console.log('[AUTH_GATE] Detected gmail_connected=1, granting immediate access')
+        setIsAuthenticated(true)
+        setIsChecking(false)
+        // Clean the query param from the URL
+        const newUrl = new URL(window.location.href)
+        newUrl.searchParams.delete('gmail_connected')
+        router.replace(newUrl.pathname + newUrl.search)
+        return
       }
 
       try {
         const response = await fetch('/api/gmail/status')
         const data: GmailStatus = await response.json()
-        
+
         if (data.connected) {
           setIsAuthenticated(true)
-          // Remove success parameter from URL if present
-          if (gmailConnected) {
-            const newUrl = new URL(window.location.href)
-            newUrl.searchParams.delete('gmail_connected')
-            router.replace(newUrl.pathname + newUrl.search)
-          }
         } else {
-          // Not authenticated - redirect to login
           router.replace('/login')
         }
       } catch (error) {
-        console.error('Error checking auth:', error)
-        // On error, redirect to login (unless we just got success param)
-        if (!gmailConnected) {
-          router.replace('/login')
-        } else {
-          // If we have success param but status check failed, wait a bit more and retry once
-          console.log('[AUTH_GATE] Retrying status check after OAuth success...')
-          await new Promise(resolve => setTimeout(resolve, 1000))
-          try {
-            const retryResponse = await fetch('/api/gmail/status')
-            const retryData: GmailStatus = await retryResponse.json()
-            if (retryData.connected) {
-              setIsAuthenticated(true)
-              const newUrl = new URL(window.location.href)
-              newUrl.searchParams.delete('gmail_connected')
-              router.replace(newUrl.pathname + newUrl.search)
-            } else {
-              router.replace('/login')
-            }
-          } catch (retryError) {
-            console.error('Error on retry:', retryError)
-            router.replace('/login')
-          }
-        }
+        console.error('[AUTH_GATE] Error checking auth:', error)
+        router.replace('/login')
       } finally {
         setIsChecking(false)
       }
