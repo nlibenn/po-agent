@@ -45,6 +45,26 @@ interface FieldComparison {
   isMismatch: boolean
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// V2 Email Generation — follows EMAIL_DRAFTING_RULES.md
+//
+// Callers MUST construct an EmailDraftContext with explicit supplierConfirmed
+// and poExpected fields. These cannot be inferred automatically because the
+// data comes from different sources (PDF parsing vs PO record) and the caller
+// is responsible for assembling them from case data.
+//
+// To migrate a legacy caller:
+//   1. Build supplierConfirmed from parsed confirmation_extractions
+//   2. Build poExpected from case.meta.po_line
+//   3. Call generateConfirmationEmailV2({ ...fields, supplierConfirmed, poExpected })
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compile-time guardrail: prevents accidentally passing ConfirmationEmailParams
+ * (legacy shape with `missingFields`) into generateConfirmationEmailV2.
+ */
+type RejectLegacyParams<T> = T extends { missingFields: unknown } ? never : T
+
 /**
  * Generate confirmation email following EMAIL_DRAFTING_RULES.md
  *
@@ -53,7 +73,9 @@ interface FieldComparison {
  *
  * Returns null if no missing/mismatched fields (nothing to ask for)
  */
-export function generateConfirmationEmail(context: EmailDraftContext): ConfirmationEmail | null {
+export function generateConfirmationEmailV2<T extends EmailDraftContext>(
+  context: RejectLegacyParams<T>
+): ConfirmationEmail | null {
   const { poNumber, lineId, supplierName, supplierConfirmed, poExpected } = context
 
   // Compute field comparisons
@@ -328,9 +350,16 @@ function generateActionRequest(issues: FieldComparison[]): string {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy Email Generation — DEPRECATED
+//
+// Uses a flat missingFields: string[] interface. Does NOT follow
+// EMAIL_DRAFTING_RULES.md. Callers should migrate to V2 when ready.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Legacy interface for backward compatibility (DEPRECATED)
- * Use generateConfirmationEmail() with EmailDraftContext instead
+ * Use generateConfirmationEmailV2() with EmailDraftContext instead
  */
 export interface ConfirmationEmailParams {
   poNumber: string
@@ -347,13 +376,13 @@ export interface ConfirmationEmailParams {
 }
 
 /**
- * @deprecated Use generateConfirmationEmail() with EmailDraftContext
+ * @deprecated Use generateConfirmationEmailV2() with EmailDraftContext
  *
  * This function is kept for backward compatibility but does NOT follow
  * EMAIL_DRAFTING_RULES.md. It will be removed in a future version.
  */
 export function generateConfirmationEmailLegacy(params: ConfirmationEmailParams): ConfirmationEmail {
-  console.warn('[emailDraft] generateConfirmationEmailLegacy is deprecated. Use generateConfirmationEmail() with EmailDraftContext instead.')
+  console.warn('[emailDraft] generateConfirmationEmailLegacy is deprecated. Use generateConfirmationEmailV2() with EmailDraftContext instead.')
 
   // Convert legacy params to new format (best effort)
   const context: EmailDraftContext = {
@@ -373,7 +402,7 @@ export function generateConfirmationEmailLegacy(params: ConfirmationEmailParams)
     },
   }
 
-  const result = generateConfirmationEmail(context)
+  const result = generateConfirmationEmailV2(context)
 
   // If new API returns null (nothing to ask), fall back to generic message
   if (!result) {

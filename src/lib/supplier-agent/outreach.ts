@@ -114,7 +114,7 @@ function base64UrlEncode(str: string): string {
  * Re-exported from emailDraft.ts for backward compatibility.
  * Use emailDraft.ts in client components.
  */
-export { generateConfirmationEmail } from './emailDraft'
+export { generateConfirmationEmailV2 } from './emailDraft'
 export type { ConfirmationEmail } from './emailDraft'
 
 /**

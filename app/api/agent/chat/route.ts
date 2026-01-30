@@ -12,7 +12,7 @@ import { searchInboxForConfirmation } from '@/src/lib/supplier-agent/inboxSearch
 import { retrievePdfAttachmentsFromThread } from '@/src/lib/supplier-agent/emailAttachments'
 import { parseConfirmationFieldsSmart } from '@/src/lib/supplier-agent/parseConfirmationFields'
 import { extractTextFromPdfBase64 } from '@/src/lib/supplier-agent/pdfTextExtraction'
-import { generateConfirmationEmail, type EmailDraftContext } from '@/src/lib/supplier-agent/emailDraft'
+import { generateConfirmationEmailV2, type EmailDraftContext } from '@/src/lib/supplier-agent/emailDraft'
 import { sendNewEmail, sendReplyInThread } from '@/src/lib/supplier-agent/outreach'
 import { getDb, getDbPath } from '@/src/lib/supplier-agent/storage/sqlite'
 import { decide as coordinatorDecide, followUpStateStore, fieldRequestCounts } from '@/src/lib/followup-coordinator'
@@ -1032,13 +1032,13 @@ async function executeDraftEmail(
       poExpected,
     }
 
-    const draft = generateConfirmationEmail(draftContext)
+    const draft = generateConfirmationEmailV2(draftContext)
 
     // Check for existing thread
     const threadId = meta.thread_id || null
     const isDemoMode = process.env.DEMO_MODE === 'true'
 
-    // If generateConfirmationEmail returned null (everything matches), produce a generic draft
+    // If generateConfirmationEmailV2 returned null (everything matches), produce a generic draft
     const subject = draft?.subject ?? `PO ${caseData.po_number} – Confirmation needed`
     const body = draft?.bodyText ?? `Hi,\n\nWe need confirmation for Purchase Order ${caseData.po_number}.\n\nThank you,\nProcurement Team`
 

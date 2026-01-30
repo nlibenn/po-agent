@@ -130,7 +130,7 @@ export async function POST(request: NextRequest) {
       lineId: resolvedLineId,
       supplierName: resolvedSupplierName,
       supplierEmail: resolvedSupplierEmail,
-      missingFields, // Always include missingFields in body (generateConfirmationEmail handles this)
+      missingFields, // Always include missingFields in body (generateConfirmationEmailLegacy handles this)
       context: {
         // Could be enhanced to pull from PO record
       },
