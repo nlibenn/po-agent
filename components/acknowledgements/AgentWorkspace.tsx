@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, Loader2, User, AlertCircle, Sparkles, Copy, Check } from 'lucide-react'
+import { Send, Loader2, User, AlertCircle, Sparkles, Copy, Check, X } from 'lucide-react'
 import { useAckChat, AckMessage } from './AcknowledgementChatProvider'
 import { useAgentState } from './AgentStateContext'
 
@@ -1075,6 +1075,7 @@ export function AgentWorkspace({
                 initialBody={emailDraft.body}
                 to={emailDraft.to}
                 onSend={handleSendDraft}
+                onDismiss={() => { setEmailDraftState('idle'); setEmailDraft(null) }}
                 isSending={isSendingDraft}
               />
             )}
@@ -1174,10 +1175,11 @@ interface EmailDraftCardProps {
   initialBody: string
   to: string
   onSend: (subject: string, body: string) => Promise<void>
+  onDismiss: () => void
   isSending: boolean
 }
 
-function EmailDraftCard({ initialSubject, initialBody, to, onSend, isSending }: EmailDraftCardProps) {
+function EmailDraftCard({ initialSubject, initialBody, to, onSend, onDismiss, isSending }: EmailDraftCardProps) {
   const [subject, setSubject] = useState(initialSubject)
   const [body, setBody] = useState(initialBody)
   const [copied, setCopied] = useState(false)
@@ -1265,6 +1267,15 @@ function EmailDraftCard({ initialSubject, initialBody, to, onSend, isSending }: 
             ) : (
               <Send className="w-4 h-4 text-text-muted" />
             )}
+          </button>
+          <button
+            onClick={onDismiss}
+            disabled={isSending}
+            className="p-2 hover:bg-surface-2/50 rounded-lg transition-colors disabled:opacity-50"
+            title="Dismiss"
+            type="button"
+          >
+            <X className="w-4 h-4 text-text-muted" />
           </button>
         </div>
       </div>

@@ -20,6 +20,7 @@ export interface EmailDraftContext {
   supplierConfirmed: {
     supplierOrderNumber?: FieldValue
     deliveryDate?: FieldValue
+    shipDate?: FieldValue
     quantity?: FieldValue
   }
 
@@ -103,16 +104,34 @@ function computeFieldComparisons(
     isMismatch: false,
   })
 
-  // Delivery Date
-  const dateSupplier = supplierConfirmed.deliveryDate?.value ?? null
+  // Date group: delivery_date and ship_date are distinct but having either
+  // is sufficient. Never ask for both. Show whichever the supplier provided.
+  const deliveryVal = supplierConfirmed.deliveryDate?.value ?? null
+  const shipVal = supplierConfirmed.shipDate?.value ?? null
   const datePO = poExpected.deliveryDate?.value ?? null
-  comparisons.push({
-    field: 'Delivery Date',
-    supplierValue: dateSupplier,
-    poValue: datePO,
-    isMissing: dateSupplier === null,
-    isMismatch: dateSupplier !== null && datePO !== null && dateSupplier !== datePO,
-  })
+  const hasAnyDate = deliveryVal !== null || shipVal !== null
+
+  if (hasAnyDate) {
+    // Supplier provided at least one date — show the one they gave
+    const label = deliveryVal !== null ? 'Delivery Date' : 'Ship Date'
+    const supplierDate = deliveryVal ?? shipVal
+    comparisons.push({
+      field: label,
+      supplierValue: supplierDate,
+      poValue: datePO,
+      isMissing: false,
+      isMismatch: supplierDate !== null && datePO !== null && supplierDate !== datePO,
+    })
+  } else {
+    // Neither date provided — mark as missing
+    comparisons.push({
+      field: 'Delivery/Ship Date',
+      supplierValue: null,
+      poValue: datePO,
+      isMissing: true,
+      isMismatch: false,
+    })
+  }
 
   // Quantity
   const qtySupplier = supplierConfirmed.quantity?.value ?? null
@@ -142,13 +161,13 @@ function determinePrimaryIssue(issues: FieldComparison[]): FieldComparison {
   const qtyMismatch = issues.find(i => i.field === 'Quantity' && i.isMismatch)
   if (qtyMismatch) return qtyMismatch
 
-  const dateMismatch = issues.find(i => i.field === 'Delivery Date' && i.isMismatch)
+  const dateMismatch = issues.find(i => (i.field === 'Delivery Date' || i.field === 'Ship Date') && i.isMismatch)
   if (dateMismatch) return dateMismatch
 
   const missingSO = issues.find(i => i.field === 'Supplier Order Number' && i.isMissing)
   if (missingSO) return missingSO
 
-  const missingDate = issues.find(i => i.field === 'Delivery Date' && i.isMissing)
+  const missingDate = issues.find(i => (i.field === 'Delivery Date' || i.field === 'Delivery/Ship Date') && i.isMissing)
   if (missingDate) return missingDate
 
   const missingQty = issues.find(i => i.field === 'Quantity' && i.isMissing)
@@ -224,8 +243,8 @@ function generateOpening(primaryIssue: FieldComparison): string {
     // Missing field
     if (primaryIssue.field === 'Supplier Order Number') {
       return `We are missing your supplier order number for this PO.`
-    } else if (primaryIssue.field === 'Delivery Date') {
-      return 'We received your order acknowledgement but need the delivery date to complete our records.'
+    } else if (primaryIssue.field === 'Delivery Date' || primaryIssue.field === 'Delivery/Ship Date') {
+      return 'We received your order acknowledgement but need the delivery or ship date to complete our records.'
     } else if (primaryIssue.field === 'Quantity') {
       return 'We received your order acknowledgement but need the quantity to complete our records.'
     } else {
@@ -260,7 +279,7 @@ function generateComparison(issues: FieldComparison[]): string {
 
     // Map field names to PO terminology
     let poFieldName = issue.field
-    if (issue.field === 'Delivery Date') {
+    if (issue.field === 'Delivery Date' || issue.field === 'Ship Date' || issue.field === 'Delivery/Ship Date') {
       poFieldName = 'Expected Delivery Date'
     } else if (issue.field === 'Quantity') {
       poFieldName = 'Ordered Quantity'

@@ -629,7 +629,19 @@ export async function POST(request: NextRequest) {
       
       // Update case state via transitionCase (only if email was actually sent)
       // Get current state before transition for logging
-      const fromState = caseData.state
+      let fromState = caseData.state
+
+      // If case is RESOLVED, reopen it first so we can send a follow-up
+      if (fromState === CaseState.RESOLVED) {
+        console.log('[SEND] reopening RESOLVED case before follow-up', { caseId })
+        transitionCase({
+          caseId,
+          toState: CaseState.WAITING,
+          event: TransitionEvent.USER_REOPEN,
+          summary: `Reopened resolved case to send follow-up for PO ${poNumber} Line ${lineId}`,
+        })
+        fromState = CaseState.WAITING
+      }
 
       // Choose appropriate transition based on current state
       // - From INBOX_LOOKUP: OUTREACH_SENT_OK -> OUTREACH_SENT (initial outreach)

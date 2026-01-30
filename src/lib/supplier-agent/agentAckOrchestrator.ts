@@ -20,6 +20,8 @@ import { CaseState, CaseStatus } from './types'
 import type { SupplierChaseCase, EventType } from './types'
 import { computeMissingFields, CANONICAL_FIELD_KEYS, normalizeMissingFields } from './fieldMapping'
 import { getGmailClient } from '../gmail/client'
+import { decide as coordinatorDecide, followUpStateStore } from '../followup-coordinator'
+import type { FollowUpContext, FollowUpDecision } from '../followup-coordinator'
 
 const POLICY_VERSION = 'ack_policy_v1'
 
@@ -1321,9 +1323,57 @@ export async function runAckOrchestrator(input: OrchestratorInput): Promise<Orch
   const canonicalMissingFieldsBefore = normalizeMissingFields(
     Array.isArray(caseData.missing_fields) ? caseData.missing_fields : []
   )
-  
+
   let canonicalMissingFieldsAfter: string[] = []
   if (extractedFields) {
+    // Emit FIELD_RESOLVED events for each extracted field with a value
+    try {
+      const fuState = followUpStateStore.getOrCreateState(
+        caseData.po_number,
+        caseData.line_id,
+        caseData.supplier_email || caseData.supplier_domain || 'unknown',
+      )
+      let currentFuState = fuState
+      if (extractedFields.supplier_order_number?.value) {
+        currentFuState = followUpStateStore.updateState(currentFuState, {
+          type: 'FIELD_RESOLVED',
+          field: CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE,
+          value: extractedFields.supplier_order_number.value,
+          source: 'parsed',
+        })
+      }
+      if (extractedFields.confirmed_delivery_date?.value) {
+        currentFuState = followUpStateStore.updateState(currentFuState, {
+          type: 'FIELD_RESOLVED',
+          field: CANONICAL_FIELD_KEYS.DELIVERY_DATE,
+          value: extractedFields.confirmed_delivery_date.value,
+          source: 'parsed',
+        })
+      }
+      if ((extractedFields as any).confirmed_ship_date?.value) {
+        currentFuState = followUpStateStore.updateState(currentFuState, {
+          type: 'FIELD_RESOLVED',
+          field: CANONICAL_FIELD_KEYS.SHIP_DATE,
+          value: (extractedFields as any).confirmed_ship_date.value,
+          source: 'parsed',
+        })
+      }
+      if (extractedFields.confirmed_quantity?.value != null) {
+        currentFuState = followUpStateStore.updateState(currentFuState, {
+          type: 'FIELD_RESOLVED',
+          field: CANONICAL_FIELD_KEYS.QUANTITY,
+          value: extractedFields.confirmed_quantity.value,
+          source: 'parsed',
+        })
+      }
+      console.log('[ACK_ORCHESTRATOR] emitted FIELD_RESOLVED events', {
+        caseId,
+        resolvedFields: Object.keys(currentFuState.resolvedFields),
+      })
+    } catch (fuErr) {
+      console.warn('[ACK_ORCHESTRATOR] follow-up state update failed (non-fatal):', fuErr)
+    }
+
     // Compute missing fields from extracted data using canonical keys
     canonicalMissingFieldsAfter = computeMissingFields(extractedFields)
     
@@ -1371,6 +1421,7 @@ export async function runAckOrchestrator(input: OrchestratorInput): Promise<Orch
     const friendlyNames: Record<string, string> = {
       'supplier_reference': 'supplier order number',
       'delivery_date': 'delivery date',
+      'ship_date': 'ship date',
       'quantity': 'quantity',
     }
     const friendly = missingFields.map(f => friendlyNames[f] || f).join(', ')
@@ -1407,6 +1458,83 @@ export async function runAckOrchestrator(input: OrchestratorInput): Promise<Orch
       supplier_exception_severity: maxSeverity,
     },
   })
+
+  // Step 3.5: Follow-up coordinator gate (purely additive — runs before drafting)
+  // Consults the ProcurementFollowUpCoordinatorAgent to check cooldowns,
+  // duplicate-ask rules, tone escalation, and handoff thresholds.
+  // If the coordinator vetoes, we downgrade the decision; we never override
+  // an existing NO_OP / NEEDS_HUMAN / APPLY_UPDATES_READY decision.
+  let coordinatorDecision: FollowUpDecision | null = null
+  if (decision.action_type === 'DRAFT_EMAIL' || decision.action_type === 'SEND_EMAIL') {
+    try {
+      const followUpState = followUpStateStore.getOrCreateState(
+        caseDataAfter.po_number,
+        caseDataAfter.line_id,
+        caseDataAfter.supplier_email || caseDataAfter.supplier_domain || 'unknown',
+      )
+
+      const coordinatorContext: FollowUpContext = {
+        caseData: caseDataAfter,
+        messages,
+        followUpState,
+        now: Date.now(),
+      }
+
+      coordinatorDecision = coordinatorDecide(coordinatorContext)
+
+      console.log('[ACK_ORCHESTRATOR] Coordinator decision:', {
+        action: coordinatorDecision.action,
+        reason: coordinatorDecision.reason,
+        policyDecision: decision.action_type,
+      })
+
+      addEvent(caseId, {
+        case_id: caseId,
+        timestamp: Date.now(),
+        event_type: 'AGENT_DECISION',
+        summary: `Follow-up coordinator: ${coordinatorDecision.action} — ${coordinatorDecision.reason}`,
+        evidence_refs_json: null,
+        meta_json: {
+          coordinator_action: coordinatorDecision.action,
+          coordinator_reason: coordinatorDecision.reason,
+          coordinator_draft: coordinatorDecision.draft ?? null,
+          coordinator_wait_until: coordinatorDecision.waitUntilMs ?? null,
+          policy_decision_before: decision.action_type,
+        },
+      })
+
+      // Veto: coordinator says don't send → downgrade policy decision
+      if (coordinatorDecision.action === 'WAIT') {
+        decision.action_type = 'NO_OP'
+        decision.reason = `Coordinator: ${coordinatorDecision.reason}`
+      } else if (coordinatorDecision.action === 'ESCALATE') {
+        decision.action_type = 'NEEDS_HUMAN'
+        decision.reason = `Coordinator escalation: ${coordinatorDecision.reason}`
+        decision.risk_level = 'HIGH'
+      } else if (coordinatorDecision.action === 'HANDOFF') {
+        decision.action_type = 'NEEDS_HUMAN'
+        decision.reason = `Coordinator handoff: ${coordinatorDecision.reason}`
+        decision.risk_level = 'HIGH'
+        decision.blocking_reason = coordinatorDecision.reason
+        decision.what_agent_needs = ['Human buyer review']
+      } else if (coordinatorDecision.action === 'NO_OP') {
+        decision.action_type = 'NO_OP'
+        decision.reason = `Coordinator: ${coordinatorDecision.reason}`
+      }
+      // SEND_FOLLOWUP → pass through (policy decision stands, coordinator approves)
+    } catch (coordinatorError) {
+      // Coordinator failure must never block the existing workflow
+      console.warn('[ACK_ORCHESTRATOR] Follow-up coordinator error (non-fatal):', coordinatorError)
+      addEvent(caseId, {
+        case_id: caseId,
+        timestamp: Date.now(),
+        event_type: 'AGENT_DECISION',
+        summary: `Follow-up coordinator error (non-fatal): ${coordinatorError instanceof Error ? coordinatorError.message : String(coordinatorError)}`,
+        evidence_refs_json: null,
+        meta_json: { coordinator_error: coordinatorError instanceof Error ? coordinatorError.message : String(coordinatorError) },
+      })
+    }
+  }
 
   // Step 4: Generate draft if needed
   // Use updated caseData (may have auto-filled supplier_email)

@@ -11,6 +11,7 @@
 export const CANONICAL_FIELD_KEYS = {
   SUPPLIER_REFERENCE: 'supplier_reference',
   DELIVERY_DATE: 'delivery_date',
+  SHIP_DATE: 'ship_date',
   QUANTITY: 'quantity',
 } as const
 
@@ -23,11 +24,32 @@ export const PARSER_TO_CANONICAL: Record<string, CanonicalFieldKey> = {
   supplier_order_number: CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE,
   supplier_reference: CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE,
   confirmed_delivery_date: CANONICAL_FIELD_KEYS.DELIVERY_DATE,
-  confirmed_ship_date: CANONICAL_FIELD_KEYS.DELIVERY_DATE,
+  confirmed_ship_date: CANONICAL_FIELD_KEYS.SHIP_DATE,
   delivery_date: CANONICAL_FIELD_KEYS.DELIVERY_DATE,
-  ship_date: CANONICAL_FIELD_KEYS.DELIVERY_DATE,
+  ship_date: CANONICAL_FIELD_KEYS.SHIP_DATE,
   confirmed_quantity: CANONICAL_FIELD_KEYS.QUANTITY,
   quantity: CANONICAL_FIELD_KEYS.QUANTITY,
+}
+
+/**
+ * Required field groups — each group is satisfied if ANY member has a value.
+ * Used by computeMissingFields to avoid requesting both ship_date and delivery_date.
+ */
+export const REQUIRED_FIELD_GROUPS: string[][] = [
+  [CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE],
+  [CANONICAL_FIELD_KEYS.DELIVERY_DATE, CANONICAL_FIELD_KEYS.SHIP_DATE],
+  [CANONICAL_FIELD_KEYS.QUANTITY],
+]
+
+/**
+ * Check whether the date group (delivery_date / ship_date) is satisfied.
+ * Having either one is sufficient — they are different dates but the buyer
+ * only needs one to proceed.
+ */
+export function isDateGroupSatisfied(resolvedOrExtracted: Record<string, any>): boolean {
+  const hasDelivery = resolvedOrExtracted[CANONICAL_FIELD_KEYS.DELIVERY_DATE] != null
+  const hasShip = resolvedOrExtracted[CANONICAL_FIELD_KEYS.SHIP_DATE] != null
+  return hasDelivery || hasShip
 }
 
 /**
@@ -63,42 +85,53 @@ export function normalizeMissingFields(fields: string[]): string[] {
 
 /**
  * Compute missing_fields from extracted fields
- * Returns array of canonical field keys that are missing
+ * Returns array of canonical field keys that are missing.
+ *
+ * Date group rule: ship_date and delivery_date are NOT equivalent, but
+ * having either one is sufficient. If either is present the date group
+ * is satisfied and neither appears in the missing list.
  */
 export function computeMissingFields(extracted: {
   supplier_order_number?: { value: string | null }
   confirmed_delivery_date?: { value: string | null }
+  confirmed_ship_date?: { value: string | null }
   confirmed_quantity?: { value: number | null }
 }): string[] {
   const missing: string[] = []
-  
+
   // Check if supplier_reference exists (non-null, non-empty string)
   const hasSupplierRef = !!(
     extracted.supplier_order_number?.value &&
     extracted.supplier_order_number.value.trim().length > 0
   )
-  
-  // Check if delivery_date exists (non-null, non-empty string)
+
+  // Check date group: either delivery_date or ship_date satisfies the requirement
   const hasDeliveryDate = !!(
     extracted.confirmed_delivery_date?.value &&
     extracted.confirmed_delivery_date.value.trim().length > 0
   )
-  
+  const hasShipDate = !!(
+    extracted.confirmed_ship_date?.value &&
+    extracted.confirmed_ship_date.value.trim().length > 0
+  )
+  const hasAnyDate = hasDeliveryDate || hasShipDate
+
   // Check if quantity exists (non-null number)
-  const hasQuantity = extracted.confirmed_quantity?.value !== null && 
+  const hasQuantity = extracted.confirmed_quantity?.value !== null &&
                       extracted.confirmed_quantity?.value !== undefined &&
                       Number.isFinite(extracted.confirmed_quantity.value)
-  
+
   if (!hasSupplierRef) {
     missing.push(CANONICAL_FIELD_KEYS.SUPPLIER_REFERENCE)
   }
-  if (!hasDeliveryDate) {
+  if (!hasAnyDate) {
+    // Neither date present — ask for delivery_date (canonical representative)
     missing.push(CANONICAL_FIELD_KEYS.DELIVERY_DATE)
   }
   if (!hasQuantity) {
     missing.push(CANONICAL_FIELD_KEYS.QUANTITY)
   }
-  
+
   return missing
 }
 

@@ -68,7 +68,7 @@ const ALLOWED_ACTIONS_BY_STATE: Record<CaseState, Set<AgentAction>> = {
     AgentAction.TRANSITION,
   ]),
   [CaseState.RESOLVED]: new Set([
-    // No side effects allowed (read-only)
+    AgentAction.TRANSITION, // Allow USER_REOPEN to reopen for follow-up
   ]),
   [CaseState.ERROR]: new Set([
     AgentAction.TRANSITION,

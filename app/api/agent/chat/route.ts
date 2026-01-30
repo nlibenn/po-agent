@@ -15,6 +15,8 @@ import { extractTextFromPdfBase64 } from '@/src/lib/supplier-agent/pdfTextExtrac
 import { generateConfirmationEmail, type EmailDraftContext } from '@/src/lib/supplier-agent/emailDraft'
 import { sendNewEmail, sendReplyInThread } from '@/src/lib/supplier-agent/outreach'
 import { getDb, getDbPath } from '@/src/lib/supplier-agent/storage/sqlite'
+import { decide as coordinatorDecide, followUpStateStore, fieldRequestCounts } from '@/src/lib/followup-coordinator'
+import type { FollowUpContext, SupplierFollowUpState } from '@/src/lib/followup-coordinator'
 
 export const runtime = 'nodejs'
 
@@ -34,17 +36,17 @@ function getOpenAIClient() {
 /**
  * Build system prompt with case context
  */
-function buildSystemPrompt(caseData: any): string {
+function buildSystemPrompt(caseData: any, followUpState?: SupplierFollowUpState): string {
+  const friendlyNames: Record<string, string> = {
+    'supplier_reference': 'Supplier Order Number',
+    'delivery_date': 'Delivery Date',
+    'ship_date': 'Ship Date',
+    'quantity': 'Quantity',
+  }
+
   const missingFields = Array.isArray(caseData.missing_fields) ? caseData.missing_fields : []
   const missingFieldsList = missingFields.length > 0
-    ? missingFields.map((f: string) => {
-        const friendlyNames: Record<string, string> = {
-          'supplier_reference': 'Supplier Order Number',
-          'delivery_date': 'Delivery Date',
-          'quantity': 'Quantity',
-        }
-        return friendlyNames[f] || f
-      }).join(', ')
+    ? missingFields.map((f: string) => friendlyNames[f] || f).join(', ')
     : 'None - all fields confirmed'
 
   // Extract expected quantity from meta for mismatch detection
@@ -149,7 +151,45 @@ IMPORTANT WORKFLOW RULES:
 
 4. NEVER write email text directly in the chat. ALL email drafting MUST go through the draft_email tool — this is what triggers the inline email editor UI. If you write email text in the chat instead of calling draft_email, the user cannot edit or send it. This applies to ALL scenarios: missing fields, quantity mismatches, price discrepancies, follow-ups, or any other reason to contact the supplier.
 
-Remember what you've already done in this conversation to avoid repeating yourself.`
+Remember what you've already done in this conversation to avoid repeating yourself.
+${followUpState ? buildFollowUpStateSection(followUpState, friendlyNames) : ''}`
+}
+
+function buildFollowUpStateSection(
+  state: SupplierFollowUpState,
+  friendlyNames: Record<string, string>,
+): string {
+  const resolvedEntries = Object.entries(state.resolvedFields)
+  const counts = fieldRequestCounts(state)
+
+  const resolvedLines = resolvedEntries.length > 0
+    ? resolvedEntries.map(([key, rf]) => {
+        const name = friendlyNames[key] || key
+        const date = new Date(rf.resolvedAt).toISOString().slice(0, 10)
+        return `  - ${name}: ${rf.value} (confirmed ${date})`
+      }).join('\n')
+    : '  (none yet)'
+
+  // Unresolved = fields still in missing_fields that are NOT in resolvedFields
+  const unresolvedKeys = (state.unresolvedIssues || []).map(i => i.field)
+  const unresolvedLines = unresolvedKeys.length > 0
+    ? unresolvedKeys.map(key => {
+        const name = friendlyNames[key] || key
+        const timesAsked = counts[key] || 0
+        return `  - ${name} (requested ${timesAsked} time${timesAsked !== 1 ? 's' : ''})`
+      }).join('\n')
+    : '  (none)'
+
+  return `
+
+FOLLOW-UP STATE:
+Resolved fields:
+${resolvedLines}
+Unresolved fields:
+${unresolvedLines}
+RULES:
+- NEVER re-request a resolved field unless the user explicitly asks to invalidate it.
+- ship_date and delivery_date are different dates, but having either one is sufficient for the buyer. NEVER ask for both.`
 }
 
 // Tool definitions for OpenAI function calling
@@ -840,6 +880,67 @@ async function executeDraftEmail(
 ): Promise<string> {
   const { caseId, caseData } = context
 
+  // --- Follow-up coordinator gate (purely additive) ---
+  // Consults the coordinator before drafting. If it vetoes, we return
+  // an advisory message to the LLM instead of generating a draft.
+  try {
+    const fuState = followUpStateStore.getOrCreateState(
+      caseData.po_number,
+      caseData.line_id,
+      caseData.supplier_email || caseData.supplier_domain || 'unknown',
+    )
+
+    const fuContext: FollowUpContext = {
+      caseData,
+      messages: listMessages(caseId),
+      followUpState: fuState,
+      now: Date.now(),
+    }
+
+    const fuDecision = coordinatorDecide(fuContext)
+
+    console.log('[AGENT_CHAT] Follow-up coordinator decision:', {
+      action: fuDecision.action,
+      reason: fuDecision.reason,
+    })
+
+    addEvent(caseId, {
+      case_id: caseId,
+      timestamp: Date.now(),
+      event_type: 'AGENT_DECISION',
+      summary: `Follow-up coordinator (chat): ${fuDecision.action} — ${fuDecision.reason}`,
+      evidence_refs_json: null,
+      meta_json: {
+        coordinator_action: fuDecision.action,
+        coordinator_reason: fuDecision.reason,
+        coordinator_draft: fuDecision.draft ?? null,
+        source: 'chat_draft_email',
+      },
+    })
+
+    if (fuDecision.action === 'WAIT') {
+      return JSON.stringify({
+        status: 'coordinator_wait',
+        reason: fuDecision.reason,
+        wait_until_ms: fuDecision.waitUntilMs ?? null,
+        summary: `Follow-up coordinator advises waiting: ${fuDecision.reason}. The email draft was not generated.`,
+      })
+    }
+
+    if (fuDecision.action === 'HANDOFF' || fuDecision.action === 'ESCALATE') {
+      return JSON.stringify({
+        status: 'coordinator_blocked',
+        reason: fuDecision.reason,
+        summary: `Follow-up coordinator recommends human review: ${fuDecision.reason}. The email draft was not generated.`,
+      })
+    }
+
+    // SEND_FOLLOWUP or NO_OP with missing fields → proceed to draft
+  } catch (coordinatorErr) {
+    // Non-fatal — coordinator failure must never block drafting
+    console.warn('[AGENT_CHAT] Follow-up coordinator error (non-fatal):', coordinatorErr)
+  }
+
   try {
     const meta = (caseData.meta && typeof caseData.meta === 'object'
       ? caseData.meta
@@ -880,11 +981,41 @@ async function executeDraftEmail(
     // by comparing these values. We must NOT null-out confirmed values just because
     // the LLM listed a field in missing_fields — that would make the template think
     // a confirmed field is missing and ask the supplier for it again.
+    //
+    // Additionally, overlay resolvedFields from the follow-up coordinator so that
+    // fields resolved in prior rounds are never re-requested.
+    let resolvedSO: string | null = null
+    let resolvedDeliveryDate: string | null = null
+    let resolvedShipDate: string | null = null
+    let resolvedQty: number | null = null
+    try {
+      const fuState = followUpStateStore.getOrCreateState(
+        caseData.po_number,
+        caseData.line_id,
+        caseData.supplier_email || caseData.supplier_domain || 'unknown',
+      )
+      if (fuState.resolvedFields.supplier_reference) {
+        resolvedSO = String(fuState.resolvedFields.supplier_reference.value)
+      }
+      if (fuState.resolvedFields.delivery_date) {
+        resolvedDeliveryDate = String(fuState.resolvedFields.delivery_date.value)
+      }
+      if (fuState.resolvedFields.ship_date) {
+        resolvedShipDate = String(fuState.resolvedFields.ship_date.value)
+      }
+      if (fuState.resolvedFields.quantity) {
+        resolvedQty = Number(fuState.resolvedFields.quantity.value)
+      }
+    } catch { /* non-fatal */ }
+
     const supplierConfirmed: EmailDraftContext['supplierConfirmed'] = {
-      supplierOrderNumber: { value: confirmedSO },
-      deliveryDate: { value: confirmedDate },
-      quantity: { value: confirmedQty },
+      supplierOrderNumber: { value: confirmedSO || confirmedDate ? confirmedSO : null },
+      deliveryDate: { value: resolvedDeliveryDate || confirmedDate },
+      shipDate: { value: resolvedShipDate },
+      quantity: { value: resolvedQty ?? confirmedQty },
     }
+    // Ensure supplier order number uses best available value
+    supplierConfirmed.supplierOrderNumber = { value: resolvedSO || confirmedSO }
 
     const poExpected: EmailDraftContext['poExpected'] = {
       deliveryDate: { value: null }, // PO expected delivery date not tracked yet
@@ -1473,8 +1604,20 @@ export async function POST(request: NextRequest) {
     console.log('[AGENT_CHAT] Initializing OpenAI client...')
     const openai = getOpenAIClient()
 
+    // Load follow-up state for system prompt context
+    let fuState: SupplierFollowUpState | undefined
+    try {
+      fuState = followUpStateStore.getOrCreateState(
+        caseData.po_number,
+        caseData.line_id,
+        caseData.supplier_email || caseData.supplier_domain || 'unknown',
+      )
+    } catch (e) {
+      console.warn('[AGENT_CHAT] Failed to load follow-up state for prompt (non-fatal):', e)
+    }
+
     // Build system prompt with case context (AFTER loading case data)
-    const systemPrompt = buildSystemPrompt(caseData)
+    const systemPrompt = buildSystemPrompt(caseData, fuState)
     console.log('[AGENT_CHAT] System prompt built, length:', systemPrompt.length)
 
     // Build messages array - system prompt MUST be first
