@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
     await exchangeCodeForTokens(code)
 
     console.log('[GMAIL_CALLBACK] Token exchange and save succeeded')
-    return NextResponse.redirect(new URL('/dashboard', request.url))
+    return NextResponse.redirect(new URL('/home?gmail_connected=1', request.url))
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
     console.error('[GMAIL_CALLBACK] Full error:', error)
