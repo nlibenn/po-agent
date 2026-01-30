@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useWorkspace } from '@/components/WorkspaceProvider'
 import { AcknowledgementWorkQueue } from '@/components/acknowledgements/AcknowledgementWorkQueue'
 import { AgentWorkspace } from '@/components/acknowledgements/AgentWorkspace'
@@ -200,15 +200,21 @@ export default function AcknowledgementsPage() {
     window.dispatchEvent(new CustomEvent('confirmationRecordUpdated'))
   }, [activeCaseId])
 
-  // Auto-select first PO when queue loads and nothing is selected
+  // Auto-select first PO when queue loads and nothing is selected.
+  // Use a ref for activeCaseId so the callback identity stays stable
+  // and doesn't re-trigger the work queue effect.
+  const activeCaseIdRef = useRef(activeCaseId)
+  activeCaseIdRef.current = activeCaseId
+
   const handleQueueLoaded = useCallback((queue: UnconfirmedPO[]) => {
-    if (!activeCaseId && queue.length > 0) {
+    console.log('[ACK_PAGE] onQueueLoaded fired, length:', queue.length, 'activeCaseId:', activeCaseIdRef.current)
+    if (!activeCaseIdRef.current && queue.length > 0) {
       const first = queue[0]
       const key = `${first.po_id}-${first.line_id || ''}`
       console.log('[ACK_PAGE] Auto-selecting first PO:', key)
       handleSelectCase(key, first)
     }
-  }, [activeCaseId, handleSelectCase])
+  }, [handleSelectCase])
 
   // Derive supplier email from matching row
   const supplierEmail = activePO ? (() => {

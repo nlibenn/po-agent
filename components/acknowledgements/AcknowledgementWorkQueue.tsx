@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useWorkspace } from '@/components/WorkspaceProvider'
 import { UnconfirmedPO, getUnconfirmedPOs } from '@/src/lib/unconfirmedPOs'
 import { ConfirmationRecord } from '@/src/lib/confirmedPOs'
@@ -98,6 +98,9 @@ export function AcknowledgementWorkQueue({
   onSelectCase,
   onQueueLoaded,
 }: AcknowledgementWorkQueueProps) {
+  // Stable ref for callback to avoid re-triggering the unconfirmedPOs effect
+  const onQueueLoadedRef = useRef(onQueueLoaded)
+  onQueueLoadedRef.current = onQueueLoaded
   const { normalizedRows } = useWorkspace()
   const [unconfirmedPOs, setUnconfirmedPOs] = useState<UnconfirmedPO[]>([])
   const [confirmationRecords, setConfirmationRecords] = useState<Map<string, ConfirmationRecord>>(new Map())
@@ -269,8 +272,9 @@ export function AcknowledgementWorkQueue({
     })
     
     setUnconfirmedPOs(sorted)
-    onQueueLoaded?.(sorted)
-  }, [normalizedRows, confirmationRecords, onQueueLoaded])
+    console.log('[WORK_QUEUE] Queue computed, length:', sorted.length)
+    onQueueLoadedRef.current?.(sorted)
+  }, [normalizedRows, confirmationRecords])
 
   const needsCount = unconfirmedPOs.length
 
