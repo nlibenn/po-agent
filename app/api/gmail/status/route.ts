@@ -17,8 +17,12 @@ export async function GET(request: NextRequest) {
       })
     }
     const tokens = await getTokens()
+    console.log('[GMAIL_STATUS] Has KV env:', !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN))
+    console.log('[GMAIL_STATUS] Tokens found:', !!tokens)
+    console.log('[GMAIL_STATUS] Has access_token:', !!tokens?.access_token)
 
     if (!tokens || !tokens.access_token) {
+      console.log('[GMAIL_STATUS] No tokens — returning connected: false')
       return NextResponse.json({
         connected: false,
       })
@@ -37,8 +41,7 @@ export async function GET(request: NextRequest) {
       email = profile.data.emailAddress || undefined
       scopes = tokens.scope ? tokens.scope.split(' ') : undefined
     } catch (error) {
-      console.error('Error verifying Gmail OAuth token:', error)
-      // Token might be invalid, return connected: false
+      console.error('[GMAIL_STATUS] Error verifying token:', error instanceof Error ? error.message : error)
       return NextResponse.json({
         connected: false,
       })
