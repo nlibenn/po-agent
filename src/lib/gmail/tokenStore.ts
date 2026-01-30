@@ -121,8 +121,15 @@ export async function saveTokens(tokens: GmailTokensInput): Promise<void> {
   }
   
   try {
+    console.log('[GMAIL_TOKEN_STORE] Writing to KV, key:', TOKEN_KEY)
+    console.log('[GMAIL_TOKEN_STORE] KV_REST_API_URL:', process.env.KV_REST_API_URL?.slice(0, 30) + '...')
     await kv.set(TOKEN_KEY, tokenData)
+    console.log('[GMAIL_TOKEN_STORE] KV write succeeded')
+    // Verify write by reading back
+    const verify = await kv.get<GmailTokens>(TOKEN_KEY)
+    console.log('[GMAIL_TOKEN_STORE] KV verify read-back:', verify ? 'success' : 'FAILED - token not found after write')
   } catch (error) {
+    console.error('[GMAIL_TOKEN_STORE] KV write error:', error instanceof Error ? error.message : error)
     throw error
   }
 }
@@ -143,10 +150,13 @@ export async function getTokens(): Promise<GmailTokens | null> {
       return loadTokensFromFile()
     }
     
+    console.log('[GMAIL_TOKEN_STORE] Reading from KV, key:', TOKEN_KEY)
+    console.log('[GMAIL_TOKEN_STORE] KV_REST_API_URL:', process.env.KV_REST_API_URL?.slice(0, 30) + '...')
     const tokenData = await kv.get<GmailTokens>(TOKEN_KEY)
+    console.log('[GMAIL_TOKEN_STORE] KV read result:', tokenData ? 'found token data' : 'null')
     return tokenData || null
   } catch (error) {
-    console.error('[GMAIL_TOKEN_STORE] Error getting tokens from KV:', error)
+    console.error('[GMAIL_TOKEN_STORE] Error getting tokens from KV:', error instanceof Error ? error.message : error)
     // Fallback to file-based storage if KV fails in local dev
     if (!isProduction()) {
       return loadTokensFromFile()
