@@ -141,9 +141,10 @@ export default function AcknowledgementsPage() {
         }),
       })
 
+      console.log('[ACK_PAGE] Resolve response status:', response.status)
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        console.error('[ACK_PAGE] Failed to resolve case:', errorData.error || response.status)
+        console.error('[ACK_PAGE] Failed to resolve case:', response.status, errorData)
         setActiveCaseId(null)
         return
       }

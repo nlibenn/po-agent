@@ -46,16 +46,20 @@ export function initDb(): Database.Database {
 
   // Ensure data directory exists
   try {
+    console.log('[SQLITE] Initializing DB at:', DB_PATH, 'cwd:', process.cwd())
     mkdirSync(DATA_DIR, { recursive: true })
   } catch (error: any) {
     // Directory might already exist, ignore
     if (error.code !== 'EEXIST') {
+      console.error('[SQLITE] Failed to create data dir:', error.message)
       throw error
     }
   }
 
   // Open database connection
+  console.log('[SQLITE] Opening database connection...')
   db = new Database(DB_PATH)
+  console.log('[SQLITE] Database opened successfully')
 
   // Enable foreign keys
   db.pragma('foreign_keys = ON')

@@ -15,19 +15,23 @@ export const runtime = 'nodejs'
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    
+    console.log('[CASES_RESOLVE] Received request:', { poNumber: body.poNumber, lineId: body.lineId, lineIdType: typeof body.lineId })
+
     // Validate required fields (lineId can be empty string for single-line POs)
     if (!body.poNumber || body.lineId === undefined || body.lineId === null) {
+      console.log('[CASES_RESOLVE] Validation failed:', { poNumber: body.poNumber, lineId: body.lineId })
       return NextResponse.json(
         { error: 'Missing required fields: poNumber, lineId' },
         { status: 400 }
       )
     }
-    
+
     const { poNumber, lineId, orderQty, unitPrice, uom } = body
-    
+
     // Find existing case
+    console.log('[CASES_RESOLVE] Looking up case:', { poNumber, lineId })
     let caseData = findCaseByPoLine(poNumber, lineId)
+    console.log('[CASES_RESOLVE] Existing case found:', !!caseData, caseData ? { caseId: caseData.case_id } : null)
     
     if (!caseData) {
       // Create new case with minimal defaults
@@ -118,7 +122,11 @@ export async function POST(request: NextRequest) {
       caseId: caseData.case_id,
     })
   } catch (error) {
-    console.error('Error resolving case:', error)
+    // On Vercel, this likely fails because better-sqlite3 can't write to
+    // the ephemeral/read-only filesystem. The ./data/ directory doesn't
+    // persist across serverless invocations.
+    console.error('[CASES_RESOLVE] FATAL ERROR:', error instanceof Error ? error.message : error)
+    console.error('[CASES_RESOLVE] Stack:', error instanceof Error ? error.stack : 'no stack')
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to resolve case' },
       { status: 500 }
