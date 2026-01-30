@@ -20,7 +20,12 @@ import Database from 'better-sqlite3'
 import { readFileSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 
-const DATA_DIR = './data'
+// On Vercel serverless, the filesystem is read-only except /tmp.
+// /tmp is ephemeral (cleared between cold starts and not shared across
+// instances), so data does NOT persist. This is a workaround to unblock
+// the app; for durable storage, migrate to Vercel Postgres or Turso.
+const IS_VERCEL = !!process.env.VERCEL
+const DATA_DIR = IS_VERCEL ? '/tmp' : './data'
 const DB_PATH = join(DATA_DIR, 'chase-agent.db')
 
 // Export DB_PATH for dev tools and diagnostics
@@ -46,7 +51,7 @@ export function initDb(): Database.Database {
 
   // Ensure data directory exists
   try {
-    console.log('[SQLITE] Initializing DB at:', DB_PATH, 'cwd:', process.cwd())
+    console.log('[SQLITE] Initializing DB at:', DB_PATH, 'cwd:', process.cwd(), 'isVercel:', IS_VERCEL)
     mkdirSync(DATA_DIR, { recursive: true })
   } catch (error: any) {
     // Directory might already exist, ignore
