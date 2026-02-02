@@ -178,7 +178,13 @@ export function initDb(): Database.Database {
         db.exec('ALTER TABLE cases ADD COLUMN last_inbox_check_at INTEGER')
         addedColumns.push('last_inbox_check_at')
       }
-      
+
+      if (!columnNames.includes('confirmation_status')) {
+        db.exec("ALTER TABLE cases ADD COLUMN confirmation_status TEXT NOT NULL DEFAULT 'UNCONFIRMED'")
+        db.exec("CREATE INDEX IF NOT EXISTS idx_cases_confirmation_status ON cases(confirmation_status)")
+        addedColumns.push('confirmation_status')
+      }
+
       // Reset column cache after migration
       columnCache = null
     }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, Fragment } from 'react'
 import { ChevronDown, ChevronRight, FileText, CheckCircle2, Paperclip, FileSpreadsheet, XCircle, Loader2, Eye, Download } from 'lucide-react'
 import { useAgentState, TaskStepStatus } from './AgentStateContext'
 
@@ -88,7 +88,6 @@ export function AgentStatePanel({
   
   const agentState = useAgentState()
   const { setGmailStatus, setPDFs, setCurrentTask, resetTask } = agentState
-  const [historyExpanded, setHistoryExpanded] = useState(true)
   const [taskExpanded, setTaskExpanded] = useState(true)
   const [sourcesExpanded, setSourcesExpanded] = useState(true)
   const [gmailConnected, setGmailConnected] = useState(false)
@@ -295,40 +294,6 @@ export function AgentStatePanel({
     )
   }
 
-  // Group consecutive identical event types
-  function groupEvents(events: any[]): any[] {
-    if (!events || events.length === 0) return []
-    
-    // Filter out technical events that aren't useful to buyers
-    const filtered = events.filter(event => 
-      event.event_type !== 'ATTACHMENT_INGESTED' &&
-      event.event_type !== 'PDF_TEXT_EXTRACTED' &&
-      event.event_type !== 'INBOX_SEARCH_STARTED'  // Always show result events instead
-    )
-    
-    const grouped: any[] = []
-    let currentGroup: any = null
-    
-    for (const event of filtered) {
-      if (currentGroup && currentGroup.event_type === event.event_type) {
-        // Same type - increment count
-        currentGroup.count = (currentGroup.count || 1) + 1
-      } else {
-        // Different type - push previous group and start new
-        if (currentGroup) grouped.push(currentGroup)
-        currentGroup = { ...event, count: 1 }
-      }
-    }
-    
-    if (currentGroup) grouped.push(currentGroup)
-    
-    // Limit to 5 most recent groups
-    return grouped.slice(0, 5)
-  }
-
-  const sortedEvents = groupEvents(
-    (caseDetails?.recent_events || []).slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-  )
   const missingFields: string[] = Array.isArray(caseDetails?.case?.missing_fields) ? caseDetails!.case.missing_fields : []
   const caseState: string | null = (caseDetails?.case?.state ?? null) as string | null
   const isAwaitingSupplierReply =
@@ -349,185 +314,200 @@ export function AgentStatePanel({
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto">
-        {/* CARD 1: PO HISTORY */}
-        <div className="border-b border-border/30">
-          <button
-            onClick={() => setHistoryExpanded(!historyExpanded)}
-            className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-2/30 transition-colors"
-          >
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
-              PO History
-            </span>
-            <ChevronDown
-              className={`w-4 h-4 text-text-subtle transition-transform ${
-                historyExpanded ? 'rotate-180' : ''
-              }`}
-            />
-          </button>
-          {historyExpanded && (
-            <div className="px-4 pb-3 space-y-3">
-              {/* Events timeline */}
-              {sortedEvents.length > 0 ? (
-                sortedEvents.map((event: any, idx: number) => (
-                  <div key={event.event_id || `${event.timestamp}-${idx}`} className="space-y-0.5">
-                    <div className="flex items-start gap-2 text-sm">
-                      <span className="shrink-0 mt-0.5">{getEventIcon(event.event_type)}</span>
-                      <span className="font-medium text-text">
-                        {getEventLabel(event.event_type)}
-                        {event.count > 1 && <span className="text-text-muted ml-1">({event.count}×)</span>}
-                      </span>
-                    </div>
-                    <div className="text-xs text-text-muted ml-6">
-                      {formatRelativeTime(event.timestamp)}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p className="text-xs text-text-muted">No activity yet</p>
-              )}
-
-              {/* CONFIRMATION DETAILS — show for non-resolved and resolved (remember previously confirmed) */}
-              <div className="space-y-0.5 pt-2 border-t border-border/30">
-                <div className="flex items-start gap-2 text-sm">
-                  <span className="shrink-0 mt-0.5">📋</span>
-                  <span className="font-medium text-text">Confirmation Details</span>
+        {/* CONFIRMATION DETAILS */}
+        <div className="border-b border-border/30 px-4 py-3">
+          <div className="space-y-0.5">
+            <div className="flex items-start gap-2 text-sm">
+              <span className="shrink-0 mt-0.5">📋</span>
+              <span className="font-medium text-text">Confirmation Details</span>
+            </div>
+            {/* Multi-confirmation indicator */}
+            {(() => {
+              const history = caseDetails?.case?.meta?.confirmation_history as Array<any> | undefined
+              const mcStatus = caseDetails?.case?.meta?.multi_confirmation_status as string | undefined
+              if (!history || history.length <= 1) return null
+              const label = mcStatus === 'revision_detected'
+                ? 'Latest revision used'
+                : mcStatus === 'conflict'
+                  ? 'Values differ — review needed'
+                  : `${history.length} confirmations agree`
+              const color = mcStatus === 'conflict'
+                ? 'text-amber-600 bg-amber-50 border-amber-200'
+                : mcStatus === 'revision_detected'
+                  ? 'text-blue-600 bg-blue-50 border-blue-200'
+                  : 'text-text-muted bg-surface-2 border-border/30'
+              return (
+                <div className={`ml-6 mt-1.5 mb-1 px-2 py-1 text-[10px] font-medium rounded border inline-block ${color}`}>
+                  {history.length} PDF{history.length !== 1 ? 's' : ''} found · {label}
                 </div>
-                <ul className="ml-6 text-xs space-y-1 mt-2">
-                  {(() => {
-                    const parsed = caseDetails?.case?.meta?.parsed_best_fields_v1
-                    const flat = caseDetails?.parsed_best_fields
-                    const applied = caseDetails?.case?.meta?.confirmation_fields_applied?.fields
-                    const rec = caseDetails?.confirmation_record
-                    const soParsed = parsed?.fields?.supplier_order_number?.value ?? flat?.supplier_order_number
-                    const soApplied = applied?.supplier_reference?.value
-                    const soRec = rec?.supplier_order_number
-                    const soValue = soParsed ?? soApplied ?? (soRec != null && soRec !== '' ? soRec : null)
-                    const dateParsed = parsed?.fields?.confirmed_delivery_date?.value ?? flat?.confirmed_delivery_date
-                    const dateApplied = applied?.delivery_date?.value
-                    const dateRec = rec?.confirmed_ship_date
-                    const dateValue = dateParsed ?? dateApplied ?? (dateRec != null && dateRec !== '' ? dateRec : null)
-                    const qtyParsed = parsed?.fields?.confirmed_quantity?.value ?? (flat?.confirmed_quantity != null ? flat.confirmed_quantity : null)
-                    const qtyApplied = applied?.quantity?.value != null ? applied.quantity.value : null
-                    const qtyRec = rec?.confirmed_quantity != null ? rec.confirmed_quantity : null
-                    const qtyValue = qtyParsed ?? qtyApplied ?? qtyRec
-                    return (
-                    <>
-                    <li className="flex items-center gap-2">
-                      {soValue ? (
-                        <>
-                          <span className="text-success">✓</span>
-                          <span className="text-text">Supplier Reference: </span>
-                          <span className="text-text font-medium">{soValue}</span>
-                        </>
-                      ) : isAwaitingSupplierReply ? (
-                        <>
-                          <span className="text-warning">⏳</span>
-                          <span className="text-text-muted">Supplier Reference (waiting for reply)</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-error">✗</span>
-                          <span className="text-text-muted">Supplier Reference (missing)</span>
-                        </>
-                      )}
-                    </li>
-                    <li className="flex items-center gap-2">
-                      {dateValue ? (
-                        (() => {
-                          const expectedDate = currentPOData?.due_date
-                          const expected = expectedDate ? new Date(expectedDate).toISOString().split('T')[0] : null
-                          const hasMismatch = expected && dateValue !== expected
-                          return hasMismatch ? (
-                            <>
-                              <span className="text-warning">⚠️</span>
-                              <span className="text-text">Delivery Date: </span>
-                              <span className="text-text font-medium">{dateValue}</span>
-                              <span className="text-text-muted text-xs ml-1">(Expected: {expected})</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-success">✓</span>
-                              <span className="text-text">Delivery Date: </span>
-                              <span className="text-text font-medium">{dateValue}</span>
-                            </>
-                          )
-                        })()
-                      ) : isAwaitingSupplierReply ? (
-                        <>
-                          <span className="text-warning">⏳</span>
-                          <span className="text-text-muted">Delivery Date (waiting for reply)</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-error">✗</span>
-                          <span className="text-text-muted">Delivery Date (missing)</span>
-                        </>
-                      )}
-                    </li>
-                    <li className="flex items-center gap-2">
-                      {qtyValue != null ? (
-                        (() => {
-                          const expected = caseDetails?.case?.meta?.po_line?.ordered_quantity
+              )
+            })()}
 
-                          // Cannot verify if expected is not set
-                          if (expected == null) {
-                            return (
-                              <>
-                                <span className="text-warning">⚠️</span>
-                                <span className="text-text">Quantity: </span>
-                                <span className="text-text font-medium">{qtyValue}</span>
-                                <span className="text-text-muted text-xs ml-1">(Cannot verify - expected qty not set)</span>
-                              </>
-                            )
-                          }
+            {(() => {
+              const parsed = caseDetails?.case?.meta?.parsed_best_fields_v1
+              const flat = caseDetails?.parsed_best_fields
+              const applied = caseDetails?.case?.meta?.confirmation_fields_applied?.fields
+              const rec = caseDetails?.confirmation_record
+              const soParsed = parsed?.fields?.supplier_order_number?.value ?? flat?.supplier_order_number
+              const soApplied = applied?.supplier_reference?.value
+              const soRec = rec?.supplier_order_number
+              const soValue = soParsed ?? soApplied ?? (soRec != null && soRec !== '' ? soRec : null)
+              const dateParsed = parsed?.fields?.confirmed_delivery_date?.value ?? flat?.confirmed_delivery_date
+              const dateApplied = applied?.delivery_date?.value
+              const dateRec = rec?.confirmed_ship_date
+              const dateValue = dateParsed ?? dateApplied ?? (dateRec != null && dateRec !== '' ? dateRec : null)
+              const qtyParsed = parsed?.fields?.confirmed_quantity?.value ?? (flat?.confirmed_quantity != null ? flat.confirmed_quantity : null)
+              const qtyApplied = applied?.quantity?.value != null ? applied.quantity.value : null
+              const qtyRec = rec?.confirmed_quantity != null ? rec.confirmed_quantity : null
+              const qtyValue = qtyParsed ?? qtyApplied ?? qtyRec
 
-                          // Check for mismatch
-                          const hasMismatch = qtyValue !== expected
+              // Classify each field as confirmed (green check) or not
+              type FieldItem = { key: string; element: React.ReactNode; isConfirmed: boolean }
+              const fields: FieldItem[] = []
 
-                          return hasMismatch ? (
-                            <>
-                              <span className="text-warning">⚠️</span>
-                              <span className="text-text">Quantity: </span>
-                              <span className="text-text font-medium">{qtyValue}</span>
-                              <span className="text-text-muted text-xs ml-1">(Expected: {expected})</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-success">✓</span>
-                              <span className="text-text">Quantity: </span>
-                              <span className="text-text font-medium">{qtyValue}</span>
-                            </>
-                          )
-                        })()
-                      ) : isAwaitingSupplierReply ? (
-                        <>
-                          <span className="text-warning">⏳</span>
-                          <span className="text-text-muted">Quantity (waiting for reply)</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-error">✗</span>
-                          <span className="text-text-muted">Quantity (missing)</span>
-                        </>
-                      )}
+              // Supplier Reference
+              const soConfirmed = !!soValue
+              fields.push({
+                key: 'so',
+                isConfirmed: soConfirmed,
+                element: soValue ? (
+                  <li className="flex items-center gap-2">
+                    <span className="text-success">✓</span>
+                    <span className="text-text">Supplier Reference: </span>
+                    <span className="text-text font-medium">{soValue}</span>
+                  </li>
+                ) : isAwaitingSupplierReply ? (
+                  <li className="flex items-center gap-2">
+                    <span className="text-warning">⏳</span>
+                    <span className="text-text-muted">Supplier Reference (waiting for reply)</span>
+                  </li>
+                ) : (
+                  <li className="flex items-center gap-2">
+                    <span className="text-error">❌</span>
+                    <span className="text-text-muted">Supplier Reference (missing)</span>
+                  </li>
+                ),
+              })
+
+              // Delivery Date
+              const expectedDate = currentPOData?.due_date
+              const expectedDateStr = expectedDate ? new Date(expectedDate).toISOString().split('T')[0] : null
+              const dateLate = dateValue && expectedDateStr && dateValue > expectedDateStr
+              const dateMismatch = dateValue && expectedDateStr && dateValue !== expectedDateStr
+              const dateConfirmed = !!dateValue && !dateMismatch
+              fields.push({
+                key: 'date',
+                isConfirmed: dateConfirmed,
+                element: dateValue ? (
+                  dateLate ? (
+                    <li className="flex items-center gap-2">
+                      <span className="text-warning">⚠️</span>
+                      <span className="text-text">Delivery Date: </span>
+                      <span className="text-text font-medium">{dateValue}</span>
+                      <span className="text-text-muted text-xs ml-1">(Late — expected {expectedDateStr})</span>
                     </li>
-                  </>
-                    )
-                  })()}
-                </ul>
+                  ) : dateMismatch ? (
+                    <li className="flex items-center gap-2">
+                      <span className="text-warning">⚠️</span>
+                      <span className="text-text">Delivery Date: </span>
+                      <span className="text-text font-medium">{dateValue}</span>
+                      <span className="text-text-muted text-xs ml-1">(Expected: {expectedDateStr})</span>
+                    </li>
+                  ) : (
+                    <li className="flex items-center gap-2">
+                      <span className="text-success">✓</span>
+                      <span className="text-text">Delivery Date: </span>
+                      <span className="text-text font-medium">{dateValue}</span>
+                    </li>
+                  )
+                ) : isAwaitingSupplierReply ? (
+                  <li className="flex items-center gap-2">
+                    <span className="text-warning">⏳</span>
+                    <span className="text-text-muted">Delivery Date (waiting for reply)</span>
+                  </li>
+                ) : (
+                  <li className="flex items-center gap-2">
+                    <span className="text-error">❌</span>
+                    <span className="text-text-muted">Delivery Date (missing)</span>
+                  </li>
+                ),
+              })
+
+              // Quantity
+              const expectedQty = caseDetails?.case?.meta?.po_line?.ordered_quantity
+              const qtyMismatch = qtyValue != null && expectedQty != null && qtyValue !== expectedQty
+              const qtyCantVerify = qtyValue != null && expectedQty == null
+              const qtyConfirmed = qtyValue != null && !qtyMismatch && !qtyCantVerify
+              fields.push({
+                key: 'qty',
+                isConfirmed: qtyConfirmed,
+                element: qtyValue != null ? (
+                  expectedQty == null ? (
+                    <li className="flex items-center gap-2">
+                      <span className="text-warning">⚠️</span>
+                      <span className="text-text">Quantity: </span>
+                      <span className="text-text font-medium">{qtyValue}</span>
+                      <span className="text-text-muted text-xs ml-1">(Cannot verify - expected qty not set)</span>
+                    </li>
+                  ) : qtyMismatch ? (
+                    <li className="flex items-center gap-2">
+                      <span className="text-warning">⚠️</span>
+                      <span className="text-text">Quantity: </span>
+                      <span className="text-text font-medium">{qtyValue}</span>
+                      <span className="text-text-muted text-xs ml-1">(Expected: {expectedQty})</span>
+                    </li>
+                  ) : (
+                    <li className="flex items-center gap-2">
+                      <span className="text-success">✓</span>
+                      <span className="text-text">Quantity: </span>
+                      <span className="text-text font-medium">{qtyValue}</span>
+                    </li>
+                  )
+                ) : isAwaitingSupplierReply ? (
+                  <li className="flex items-center gap-2">
+                    <span className="text-warning">⏳</span>
+                    <span className="text-text-muted">Quantity (waiting for reply)</span>
+                  </li>
+                ) : (
+                  <li className="flex items-center gap-2">
+                    <span className="text-error">❌</span>
+                    <span className="text-text-muted">Quantity (missing)</span>
+                  </li>
+                ),
+              })
+
+              const confirmedFields = fields.filter(f => f.isConfirmed)
+              const otherFields = fields.filter(f => !f.isConfirmed)
+
+              return (
+                <div className="ml-6 mt-2">
+                  {confirmedFields.length > 0 && (
+                    <ul className="text-xs space-y-1">
+                      {confirmedFields.map(f => <Fragment key={f.key}>{f.element}</Fragment>)}
+                    </ul>
+                  )}
+                  {confirmedFields.length > 0 && otherFields.length > 0 && (
+                    <div className="my-2" />
+                  )}
+                  {otherFields.length > 0 && (
+                    <ul className="text-xs space-y-1">
+                      {otherFields.map(f => <Fragment key={f.key}>{f.element}</Fragment>)}
+                    </ul>
+                  )}
+                </div>
+              )
+            })()}
+          </div>
+
+          {/* Next check */}
+          {caseDetails?.case?.next_check_at && (
+            <div className="space-y-0.5 pt-2 mt-2 border-t border-border/30">
+              <div className="flex items-start gap-2 text-sm">
+                <span className="shrink-0 mt-0.5">⏭️</span>
+                <span className="font-medium text-text">
+                  Next check: {formatRelativeTime(caseDetails.case.next_check_at)}
+                </span>
               </div>
-
-              {/* Next check */}
-              {caseDetails?.case?.next_check_at && (
-                <div className="space-y-0.5 pt-2 border-t border-border/30">
-                  <div className="flex items-start gap-2 text-sm">
-                    <span className="shrink-0 mt-0.5">⏭️</span>
-                    <span className="font-medium text-text">
-                      Next check: {formatRelativeTime(caseDetails.case.next_check_at)}
-                    </span>
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -655,34 +635,6 @@ export function AgentStatePanel({
       </div>
     </div>
   )
-}
-
-function getEventIcon(eventType: string): string {
-  const icons: Record<string, string> = {
-    CASE_CREATED: '📝',
-    INBOX_SEARCH_STARTED: '🔍',
-    EMAIL_SENT: '✅',
-    EMAIL_DRAFTED: '✉️',
-    PDF_PARSED: '📄',
-    CASE_RESOLVED: '✅',
-    REPLY_RECEIVED: '📧',
-    AGENT_EMAIL_SENT: '✅',
-  }
-  return icons[eventType] || '•'
-}
-
-function getEventLabel(eventType: string): string {
-  const labels: Record<string, string> = {
-    CASE_CREATED: 'Case created',
-    INBOX_SEARCH_STARTED: 'Searched inbox',
-    EMAIL_SENT: 'Sent confirmation request',
-    EMAIL_DRAFTED: 'Drafted email',
-    PDF_PARSED: 'Parsed PDF',
-    CASE_RESOLVED: 'Confirmed all details',
-    REPLY_RECEIVED: 'Received supplier reply',
-    AGENT_EMAIL_SENT: 'Agent sent email',
-  }
-  return labels[eventType] || eventType.replace(/_/g, ' ').toLowerCase()
 }
 
 function formatRelativeTime(timestamp: number): string {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAllCases } from '@/src/lib/supplier-agent/store'
-import { CaseState, CaseStatus } from '@/src/lib/supplier-agent/types'
+import { CaseState, CaseStatus, ConfirmationStatus } from '@/src/lib/supplier-agent/types'
 
 export const runtime = 'nodejs'
 
@@ -13,19 +13,20 @@ export async function POST(request: NextRequest) {
     }
 
     const allCases = getAllCases()
-    const byKey = new Map<string, { state: CaseState; status: CaseStatus }>()
+    console.log('[BULK_CASES] allCases count:', allCases.length, 'confirmation_statuses:', allCases.map(c => ({ key: `${c.po_number}-${c.line_id}`, confirmation_status: c.confirmation_status })))
+    const byKey = new Map<string, { state: CaseState; status: CaseStatus; confirmation_status: ConfirmationStatus }>()
 
     for (const c of allCases) {
-      byKey.set(`${c.po_number}-${c.line_id}`, { state: c.state, status: c.status })
+      byKey.set(`${c.po_number}-${c.line_id}`, { state: c.state, status: c.status, confirmation_status: c.confirmation_status })
     }
 
-    const result: Record<string, { state: CaseState; status: CaseStatus }> = {}
+    const result: Record<string, { state: CaseState; status: CaseStatus; confirmation_status: ConfirmationStatus }> = {}
 
     for (const key of poLines) {
       const caseInfo = byKey.get(key)
       result[key] = caseInfo
         ? caseInfo
-        : { state: CaseState.INBOX_LOOKUP, status: CaseStatus.STILL_AMBIGUOUS }
+        : { state: CaseState.INBOX_LOOKUP, status: CaseStatus.STILL_AMBIGUOUS, confirmation_status: 'UNCONFIRMED' }
     }
 
     return NextResponse.json({ cases: result })

@@ -545,10 +545,10 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
       }
     }
     
-    // AUTOMATIC PDF PARSING: Try all top candidates until we find a thread with PDFs
+    // AUTOMATIC PDF PARSING: Check ALL candidate threads for PDFs
     let parsedData: SearchResult['parsedData'] | undefined = undefined
     let hasParsedData = false
-    let pdfFoundInThreadId: string | null = null
+    const pdfThreadIds: string[] = []
 
     if (topCandidates.length > 0) {
       // Prioritize supplier-originated messages first (more likely to have confirmation PDFs)
@@ -608,9 +608,8 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
             .get(caseId, candidate.threadId) as { count: number }
 
           if (pdfCheck.count > 0) {
-            console.log(`[INBOX_SEARCH] ✓ Found ${pdfCheck.count} PDF(s) in thread ${candidate.threadId}, using this thread for parsing`)
-            pdfFoundInThreadId = candidate.threadId
-            break // Stop on first thread with PDFs
+            console.log(`[INBOX_SEARCH] ✓ Found ${pdfCheck.count} PDF(s) in thread ${candidate.threadId}`)
+            pdfThreadIds.push(candidate.threadId)
           } else {
             console.log(`[INBOX_SEARCH] ✗ No PDFs in thread ${candidate.threadId}, trying next...`)
           }
@@ -621,29 +620,32 @@ export async function searchInboxForConfirmation(params: InboxSearchParams): Pro
       }
     }
 
-    // Now parse PDFs from the thread where we found attachments
-    if (pdfFoundInThreadId) {
-      console.log(`[INBOX_SEARCH] Parsing PDFs from thread ${pdfFoundInThreadId}`)
+    // Now parse PDFs from ALL threads where we found attachments
+    if (pdfThreadIds.length > 0) {
+      console.log(`[INBOX_SEARCH] Found PDFs across ${pdfThreadIds.length} thread(s), collecting all...`)
 
       try {
-        // Get PDF attachments with binary data from the selected thread
+        // Get PDF attachments with binary data from ALL threads with PDFs
         const db = getDb()
+        const placeholders = pdfThreadIds.map(() => '?').join(', ')
         const rawAttachments = db
           .prepare(`
             SELECT a.attachment_id, a.filename, a.text_extract, a.binary_data_base64
             FROM attachments a
             INNER JOIN messages m ON m.message_id = a.message_id
             WHERE m.case_id = ?
-              AND m.thread_id = ?
+              AND m.thread_id IN (${placeholders})
               AND a.mime_type = 'application/pdf'
             ORDER BY m.received_at DESC
           `)
-          .all(caseId, pdfFoundInThreadId) as Array<{
+          .all(caseId, ...pdfThreadIds) as Array<{
             attachment_id: string
             filename: string | null
             text_extract: string | null
             binary_data_base64: string | null
           }>
+
+        console.log(`[MULTI_PDF] Found ${rawAttachments.length} PDFs across ${pdfThreadIds.length} threads for PO ${poNumber}`)
         
         if (rawAttachments.length > 0) {
           console.log(`[INBOX_SEARCH] Found ${rawAttachments.length} PDF attachment(s), extracting text and parsing...`)

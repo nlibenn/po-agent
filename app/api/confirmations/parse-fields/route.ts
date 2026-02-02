@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/src/lib/supplier-agent/storage/sqlite'
-import { parseConfirmationFieldsV1 } from '@/src/lib/supplier-agent/parseConfirmationFields'
+import { parseConfirmationFieldsV1, deriveConfirmationStatus } from '@/src/lib/supplier-agent/parseConfirmationFields'
 import { randomUUID } from 'crypto'
 import { addEvent } from '@/src/lib/supplier-agent/store'
 import { extractTextFromPdfBase64 } from '@/src/lib/supplier-agent/pdfTextExtraction'
@@ -442,7 +442,13 @@ export async function POST(request: NextRequest) {
         quantity_mismatch: parsed.quantity_mismatch,
         raw_excerpt: parsed.raw_excerpt,
       }
-      db.prepare(`UPDATE cases SET meta = ?, updated_at = ? WHERE case_id = ?`).run(JSON.stringify(meta), now, caseId)
+      const dueDateRaw = meta.po_line?.due_date
+      let expectedDueDate: string | null = null
+      if (dueDateRaw) {
+        const d = new Date(String(dueDateRaw))
+        if (!isNaN(d.getTime())) expectedDueDate = d.toISOString().split('T')[0]
+      }
+      db.prepare(`UPDATE cases SET meta = ?, updated_at = ?, confirmation_status = ? WHERE case_id = ?`).run(JSON.stringify(meta), now, deriveConfirmationStatus(parsed, { expectedDueDate }), caseId)
       const persistedFields = meta.parsed_best_fields_v1?.fields || {}
       const persistedSupplierQty = persistedFields.supplier_confirmed_quantity
       console.log('[QTY_TRACE] api persisted supplier_confirmed_quantity', {

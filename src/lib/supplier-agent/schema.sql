@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS cases (
   updated_at INTEGER NOT NULL,
   next_check_at INTEGER, -- unix ms, NULL means no scheduled check
   last_inbox_check_at INTEGER, -- unix ms, observability only
-  meta TEXT NOT NULL DEFAULT '{}' -- JSON object
+  meta TEXT NOT NULL DEFAULT '{}', -- JSON object
+  confirmation_status TEXT NOT NULL DEFAULT 'UNCONFIRMED'
 );
 
 -- Events table
@@ -87,6 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_cases_po_line ON cases(po_number, line_id);
 CREATE INDEX IF NOT EXISTS idx_cases_state ON cases(state);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
 CREATE INDEX IF NOT EXISTS idx_cases_updated_at ON cases(updated_at);
+CREATE INDEX IF NOT EXISTS idx_cases_confirmation_status ON cases(confirmation_status);
 
 -- Gmail OAuth tokens table
 CREATE TABLE IF NOT EXISTS gmail_tokens (

@@ -10,7 +10,8 @@ function debugLog(payload: object) {
 import { getCase, listMessages, listAttachmentsForCase, addEvent, updateCase } from '@/src/lib/supplier-agent/store'
 import { searchInboxForConfirmation } from '@/src/lib/supplier-agent/inboxSearch'
 import { retrievePdfAttachmentsFromThread } from '@/src/lib/supplier-agent/emailAttachments'
-import { parseConfirmationFieldsSmart } from '@/src/lib/supplier-agent/parseConfirmationFields'
+import { parseConfirmationFieldsSmart, deriveConfirmationStatus, parsePerPdfResults, detectRevisionKeywords } from '@/src/lib/supplier-agent/parseConfirmationFields'
+import type { ConfirmationHistoryEntry, MultiConfirmationStatus } from '@/src/lib/supplier-agent/types'
 import { extractTextFromPdfBase64 } from '@/src/lib/supplier-agent/pdfTextExtraction'
 import { generateConfirmationEmailV2, type EmailDraftContext } from '@/src/lib/supplier-agent/emailDraft'
 import { sendNewEmail, sendReplyInThread } from '@/src/lib/supplier-agent/outreach'
@@ -94,8 +95,14 @@ Your capabilities:
 - read_confirmation: Extract data from PDFs and emails (use this if you need to re-parse or if search_inbox didn't find PDFs)
 - draft_email: Generate a professional email requesting missing info
 - send_email: Send the drafted email (only after user approval)
+NOTE: Confirmation status (CONFIRMED_CLEAN, CONFIRMED_WITH_ISSUES, UNCONFIRMED) is automatically derived after parsing — no manual tool call needed.
 
 IMPORTANT: search_inbox now automatically parses PDFs when found. If the response includes parsed_data with supplier_order_number, delivery_date, or quantity, you already have the confirmation data - no need to call read_confirmation separately.
+
+MULTIPLE CONFIRMATIONS: When read_confirmation returns multi_confirmation_status:
+- "revision_detected": Supplier sent a corrected confirmation. Use the latest values and inform the buyer: "The supplier sent a revised confirmation — I'm using the most recent values."
+- "conflict": Multiple PDFs show different values with no revision indicator. Show the differences and ask the buyer which to use: "I found N confirmations with different values. [show table]. Which should I use?"
+- "consistent": All confirmations agree. Proceed normally — no need to mention multiple PDFs.
 
 Always:
 - Explain what you're doing
@@ -415,14 +422,37 @@ async function executeSearchInbox(
           },
           raw_excerpt: null,
         }
-        updateCase(caseId, { meta })
+        // Derive confirmation_status from search_inbox parsed data
+        const hasOrderNumber = !!parsedData.supplier_order_number
+        const hasDeliveryDate = !!parsedData.delivery_date
+        // Check quantity mismatch against expected qty from case meta
+        let hasQtyMismatch = false
+        if (parsedData.quantity != null) {
+          try {
+            const caseMeta = typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : caseData.meta
+            const expectedQtyRaw = caseMeta?.po_line?.ordered_quantity
+            if (expectedQtyRaw != null) {
+              const expected = typeof expectedQtyRaw === 'number' ? expectedQtyRaw : parseFloat(String(expectedQtyRaw))
+              if (Number.isFinite(expected) && expected > 0 && parsedData.quantity !== expected) {
+                hasQtyMismatch = true
+              }
+            }
+          } catch (_e) { /* ignore */ }
+        }
+        let searchInboxConfStatus: import('@/src/lib/supplier-agent/types').ConfirmationStatus = 'UNCONFIRMED'
+        if (hasOrderNumber && hasDeliveryDate) {
+          searchInboxConfStatus = hasQtyMismatch ? 'CONFIRMED_WITH_ISSUES' : 'CONFIRMED_CLEAN'
+        }
+        console.log('[AGENT_CHAT] executeSearchInbox: derived confirmation_status:', { searchInboxConfStatus, hasOrderNumber, hasDeliveryDate, hasQtyMismatch })
+        updateCase(caseId, { meta, confirmation_status: searchInboxConfStatus })
+        console.log('[AGENT_CHAT] executeSearchInbox: updated case confirmation_status to:', searchInboxConfStatus)
         addEvent(caseId, {
           case_id: caseId,
           timestamp: now,
           event_type: 'PARSE_RESULT',
           summary: 'Parsed confirmation fields (v1)',
           evidence_refs_json: evidence_attachment_id ? { attachment_ids: [evidence_attachment_id] } : null,
-          meta_json: { version: 'v1', source: 'search_inbox', evidence_attachment_id },
+          meta_json: { version: 'v1', source: 'search_inbox', evidence_attachment_id, confirmation_status: searchInboxConfStatus },
         })
         debugLog({ location: 'chat/route.ts:executeSearchInbox', message: 'search_inbox persist done', data: { caseId, hasSO: !!supplier_order_number, hasDate: !!confirmed_delivery_date, hasQty: confirmed_quantity != null } })
       } catch (persistErr) {
@@ -512,10 +542,11 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
     const db = getDb()
     console.log('[AGENT_CHAT] DEBUG: Database connection obtained')
     
-    // Get PDF attachments with binary data
+    // Get PDF attachments with binary data and message info
     const rawAttachments = db
       .prepare(`
-        SELECT a.attachment_id, a.filename, a.text_extract, a.binary_data_base64
+        SELECT a.attachment_id, a.filename, a.text_extract, a.binary_data_base64,
+               a.message_id, m.body_text AS message_body, m.received_at AS message_received_at
         FROM attachments a
         INNER JOIN messages m ON m.message_id = a.message_id
         WHERE m.case_id = ?
@@ -527,7 +558,20 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
         filename: string | null
         text_extract: string | null
         binary_data_base64: string | null
+        message_id: string | null
+        message_body: string | null
+        message_received_at: number | null
       }>
+
+    console.log('[MULTI_PDF] PDF attachments found for case:', rawAttachments.length)
+    for (const att of rawAttachments) {
+      console.log('[MULTI_PDF] PDF:', {
+        attachment_id: att.attachment_id,
+        filename: att.filename,
+        message_received_at: att.message_received_at ? new Date(att.message_received_at).toISOString() : null,
+        message_id: att.message_id,
+      })
+    }
 
     if (rawAttachments.length === 0) {
       return JSON.stringify({
@@ -583,15 +627,16 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
       })
     }
 
-    // Extract expected quantity and unit price from case meta if available
+    // Extract expected quantity, unit price, and due date from case meta if available
     let expectedQty: number | null = null
     let expectedUnitPrice: number | null = null
+    let expectedDueDate: string | null = null
     if (caseData.meta) {
       try {
         const meta = typeof caseData.meta === 'string' ? JSON.parse(caseData.meta) : caseData.meta
         if (meta.po_line?.ordered_quantity) {
-          const qty = typeof meta.po_line.ordered_quantity === 'number' 
-            ? meta.po_line.ordered_quantity 
+          const qty = typeof meta.po_line.ordered_quantity === 'number'
+            ? meta.po_line.ordered_quantity
             : parseFloat(String(meta.po_line.ordered_quantity))
           if (Number.isFinite(qty) && qty > 0) {
             expectedQty = qty
@@ -604,6 +649,17 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
             : parseFloat(String(meta.po_line.unit_price).replace(/[$,\s]/g, ''))
           if (Number.isFinite(price) && price > 0) {
             expectedUnitPrice = price
+          }
+        }
+        // Extract expected due date for late delivery detection
+        if (meta.po_line?.due_date) {
+          const dd = String(meta.po_line.due_date).trim()
+          if (dd && dd !== 'null' && dd !== 'undefined') {
+            // Normalize to YYYY-MM-DD
+            const d = new Date(dd)
+            if (!isNaN(d.getTime())) {
+              expectedDueDate = d.toISOString().split('T')[0]
+            }
           }
         }
       } catch (e) {
@@ -638,6 +694,92 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
       hasQuantity: parsed.supplier_confirmed_quantity.value !== null,
       hasUnitPrice: !!parsed.unit_price?.value,
     })
+
+    // Auto-derive confirmation_status immediately after parsing (no agent tool dependency)
+    const autoConfirmationStatus = deriveConfirmationStatus(parsed, { expectedDueDate })
+    console.log('[AGENT_CHAT] Auto-derived confirmation_status:', autoConfirmationStatus)
+
+    // --- Multi-confirmation handling ---
+    // Build attachment → message metadata map for revision detection
+    const attachmentMessageMap = new Map<string, { message_id: string | null; body: string | null; received_at: number | null; filename: string | null }>()
+    for (const att of rawAttachments) {
+      attachmentMessageMap.set(att.attachment_id, {
+        message_id: att.message_id,
+        body: att.message_body,
+        received_at: att.message_received_at,
+        filename: att.filename,
+      })
+    }
+
+    let multiConfirmationStatus: MultiConfirmationStatus = 'single'
+    let confirmationHistory: ConfirmationHistoryEntry[] = []
+
+    console.log('[MULTI_PDF] pdfTexts with extractable text:', pdfTexts.length)
+
+    if (pdfTexts.length > 1) {
+      // Parse each PDF individually (regex-only, no LLM cost)
+      const parseInput = {
+        poNumber: caseData.po_number,
+        lineId: caseData.line_id,
+        expectedQty: expectedQty ?? undefined,
+        expectedUnitPrice: expectedUnitPrice ?? undefined,
+        pdfTexts,
+      }
+      const { perPdf } = parsePerPdfResults(parseInput)
+
+      const now = Date.now()
+      let anyRevision = false
+
+      for (const { attachment_id, result } of perPdf) {
+        const msgInfo = attachmentMessageMap.get(attachment_id)
+        const revisionDetected = detectRevisionKeywords(msgInfo?.body)
+        if (revisionDetected) anyRevision = true
+
+        confirmationHistory.push({
+          attachment_id,
+          filename: msgInfo?.filename ?? undefined,
+          parsed_at: now,
+          fields: {
+            supplier_order_number: { value: result.supplier_order_number.value, confidence: result.supplier_order_number.confidence },
+            confirmed_delivery_date: { value: result.confirmed_delivery_date.value, confidence: result.confirmed_delivery_date.confidence },
+            confirmed_quantity: { value: result.supplier_confirmed_quantity.value, confidence: result.supplier_confirmed_quantity.confidence },
+          },
+          evidence_source: result.evidence_source,
+          revision_detected: revisionDetected,
+          message_id: msgInfo?.message_id,
+        })
+      }
+
+      // Determine multi_confirmation_status
+      if (anyRevision) {
+        multiConfirmationStatus = 'revision_detected'
+      } else {
+        // Check if all PDFs agree on core fields
+        const soValues = confirmationHistory.map(h => h.fields.supplier_order_number.value).filter(Boolean)
+        const dateValues = confirmationHistory.map(h => h.fields.confirmed_delivery_date.value).filter(Boolean)
+        const qtyValues = confirmationHistory.map(h => h.fields.confirmed_quantity.value).filter(v => v !== null)
+        const soAgree = new Set(soValues).size <= 1
+        const dateAgree = new Set(dateValues).size <= 1
+        const qtyAgree = new Set(qtyValues).size <= 1
+        multiConfirmationStatus = (soAgree && dateAgree && qtyAgree) ? 'consistent' : 'conflict'
+      }
+
+      console.log('[MULTI_PDF] parsePerPdfResults output:', confirmationHistory.map(h => ({
+        attachment_id: h.attachment_id,
+        filename: h.filename,
+        so: h.fields.supplier_order_number.value,
+        date: h.fields.confirmed_delivery_date.value,
+        qty: h.fields.confirmed_quantity.value,
+        revision: h.revision_detected,
+      })))
+      console.log('[MULTI_PDF] multi_confirmation_status:', multiConfirmationStatus, '| anyRevision:', anyRevision)
+      console.log('[MULTI_PDF] "best" result selected from combined parse:', {
+        so: parsed.supplier_order_number.value,
+        date: parsed.confirmed_delivery_date.value,
+        qty: parsed.supplier_confirmed_quantity.value,
+        evidence_source: parsed.evidence_source,
+      })
+    }
 
     const extractedFields: Record<string, any> = {}
     const missingFields: string[] = []
@@ -743,6 +885,10 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
 
     // Persist parsed fields so Confirmation Details card can show them (fix: chat displayed data but card stayed missing)
     const caseId = context.caseId
+    console.log('[AGENT_CHAT] About to updateCase with confirmation_status:', { caseId, autoConfirmationStatus, previousStatus: caseData.confirmation_status })
+    updateCase(caseId, { confirmation_status: autoConfirmationStatus })
+    const caseAfterUpdate = getCase(caseId)
+    console.log('[AGENT_CHAT] After updateCase, case confirmation_status is now:', caseAfterUpdate?.confirmation_status, 'for caseId:', caseId)
     const evidence_attachment_id =
       parsed.supplier_order_number.attachment_id ||
       parsed.confirmed_delivery_date.attachment_id ||
@@ -828,7 +974,12 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
         },
         raw_excerpt: parsed.raw_excerpt,
       }
-      updateCase(caseId, { meta })
+      // Persist multi-confirmation data
+      if (confirmationHistory.length > 1) {
+        meta.confirmation_history = confirmationHistory.slice(0, 10) // cap at 10
+        meta.multi_confirmation_status = multiConfirmationStatus
+      }
+      updateCase(caseId, { meta, confirmation_status: autoConfirmationStatus })
       addEvent(caseId, {
         case_id: caseId,
         timestamp: now,
@@ -858,6 +1009,18 @@ async function executeReadConfirmation(context: ToolContext): Promise<string> {
       evidence_source: parsed.evidence_source,
       expected_quantity: expectedQty,
       expected_unit_price: expectedUnitPrice,
+      multi_confirmation_status: multiConfirmationStatus !== 'single' ? multiConfirmationStatus : undefined,
+      confirmation_count: confirmationHistory.length > 1 ? confirmationHistory.length : undefined,
+      confirmation_history: confirmationHistory.length > 1
+        ? confirmationHistory.map(h => ({
+            attachment_id: h.attachment_id,
+            filename: h.filename,
+            revision_detected: h.revision_detected,
+            supplier_order_number: h.fields.supplier_order_number.value,
+            delivery_date: h.fields.confirmed_delivery_date.value,
+            quantity: h.fields.confirmed_quantity.value,
+          }))
+        : undefined,
       summary: summaryParts.length > 0
         ? summaryParts.join('. ')
         : 'Could not extract confirmation fields from the PDF.',
@@ -1601,11 +1764,14 @@ export async function POST(request: NextRequest) {
         lineId: caseData.line_id,
       })
       return NextResponse.json({
-        response: `Database error: Case ${caseId} not found. Please try selecting the PO again from the work queue.`,
-        message: `Database error: Case ${caseId} not found. Please try selecting the PO again from the work queue.`,
+        error: 'CASE_NOT_FOUND',
+        response: `Case not found in database. Please wait a moment and try again.`,
+        message: `Case not found in database. Please wait a moment and try again.`,
         tool_calls: [],
         case_state: null,
-      }, { status: 500 })
+        poNumber: caseData.po_number,
+        lineId: caseData.line_id,
+      }, { status: 404 })
     }
     
     console.log('[AGENT_CHAT] Using case (verified in DB):', { 

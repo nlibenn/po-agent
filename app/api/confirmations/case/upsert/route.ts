@@ -182,8 +182,9 @@ export async function POST(request: NextRequest) {
         next_check_at: null,
         last_inbox_check_at: null,
         meta,
+        confirmation_status: 'UNCONFIRMED',
       })
-      
+
       caseData = findCaseByPoLine(poNumber, lineId)
     } else {
       // Update existing case if supplier_email, supplier_domain, or orderQty provided

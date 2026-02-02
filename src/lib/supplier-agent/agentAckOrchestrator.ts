@@ -12,7 +12,7 @@ import { searchInboxForConfirmation } from './inboxSearch'
 import { retrievePdfAttachmentsFromThread } from './emailAttachments'
 import { generateConfirmationEmailLegacy } from './emailDraft'
 import { sendNewEmail, sendReplyInThread } from './outreach'
-import { parseConfirmationFieldsV1 } from './parseConfirmationFields'
+import { parseConfirmationFieldsV1, deriveConfirmationStatus } from './parseConfirmationFields'
 import { extractTextFromPdfBase64 } from './pdfTextExtraction'
 import { getDb } from './storage/sqlite'
 import { transitionCase, TransitionEvent } from './stateMachine'
@@ -1093,6 +1093,7 @@ export async function runAckOrchestrator(input: OrchestratorInput): Promise<Orch
   let extractedFields = extractBestFields(caseId)
   let evidenceExisted = false
   let parsePerformed = false
+  let parsedConfirmationStatus: import('./types').ConfirmationStatus = 'UNCONFIRMED'
   
   // Get expectedQty from case meta (for quantity validation)
   const meta = (caseDataAfter.meta && typeof caseDataAfter.meta === 'object' ? caseDataAfter.meta : {}) as Record<string, any>
@@ -1207,6 +1208,15 @@ export async function runAckOrchestrator(input: OrchestratorInput): Promise<Orch
         debug: debug,
       })
       
+      // Derive confirmation_status from parsed fields
+      const dueDateRaw = meta.po_line?.due_date
+      let expectedDueDate: string | null = null
+      if (dueDateRaw) {
+        const d = new Date(String(dueDateRaw))
+        if (!isNaN(d.getTime())) expectedDueDate = d.toISOString().split('T')[0]
+      }
+      parsedConfirmationStatus = deriveConfirmationStatus(parsed, { expectedDueDate })
+
       // Convert to ExtractedFieldsBest format
       // Use supplier_confirmed_quantity for evidence-based extraction (from PDF/email)
       // confirmed_quantity is kept for backward compatibility (represents ordered_quantity)
@@ -1387,24 +1397,28 @@ export async function runAckOrchestrator(input: OrchestratorInput): Promise<Orch
     })
     
     // Persist updated missing_fields using canonical keys
-    if (JSON.stringify(canonicalMissingFieldsBefore.sort()) !== JSON.stringify(canonicalMissingFieldsAfter.sort())) {
-      const newState = canonicalMissingFieldsAfter.length === 0 
-        ? CaseState.RESOLVED 
-        : (caseData.state === CaseState.INBOX_LOOKUP || caseData.state === CaseState.OUTREACH_SENT 
-           ? CaseState.WAITING 
+    const missingFieldsChanged = JSON.stringify(canonicalMissingFieldsBefore.sort()) !== JSON.stringify(canonicalMissingFieldsAfter.sort())
+    const confirmationStatusChanged = parsedConfirmationStatus !== (caseData.confirmation_status ?? 'UNCONFIRMED')
+
+    if (missingFieldsChanged || confirmationStatusChanged) {
+      const newState = canonicalMissingFieldsAfter.length === 0
+        ? CaseState.RESOLVED
+        : (caseData.state === CaseState.INBOX_LOOKUP || caseData.state === CaseState.OUTREACH_SENT
+           ? CaseState.WAITING
            : CaseState.PARSED)
-      
+
       updateCase(caseId, {
-        missing_fields: canonicalMissingFieldsAfter,
-        state: newState,
+        ...(missingFieldsChanged ? { missing_fields: canonicalMissingFieldsAfter, state: newState } : {}),
+        confirmation_status: parsedConfirmationStatus,
         ...(canonicalMissingFieldsAfter.length === 0 ? { status: CaseStatus.CONFIRMED } : {}),
       })
-      
+
       console.log('[ACK_ORCHESTRATOR] updated missing_fields and state', {
         caseId,
         canonicalMissingFields: canonicalMissingFieldsAfter,
-        newState,
+        newState: missingFieldsChanged ? newState : caseData.state,
         wasFullyConfirmed: canonicalMissingFieldsAfter.length === 0,
+        confirmation_status: parsedConfirmationStatus,
       })
     }
   } else {

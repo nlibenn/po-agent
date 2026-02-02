@@ -705,12 +705,40 @@ export function AgentWorkspace({
         body: JSON.stringify(requestBody),
       })
 
+      let result: any
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error || `Chat failed: ${response.status}`)
-      }
 
-      const result = await response.json()
+        // If the case doesn't exist in DB yet, auto-resolve and retry once
+        if (response.status === 404 && errorData.error === 'CASE_NOT_FOUND' && poNumber) {
+          console.warn('[AgentWorkspace] Case not found in DB, auto-resolving before retry...')
+          const resolveRes = await fetch('/api/cases/resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ poNumber, lineId: lineId || '' }),
+          })
+          const resolveData = resolveRes.ok ? await resolveRes.json() : null
+          if (resolveData?.ok && resolveData.caseId) {
+            const retryResponse = await fetch('/api/agent/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...requestBody, caseId: resolveData.caseId }),
+            })
+            if (retryResponse.ok) {
+              result = await retryResponse.json()
+            } else {
+              throw new Error('Case not found. Please re-select the PO from the work queue.')
+            }
+          } else {
+            throw new Error('Case not found. Please re-select the PO from the work queue.')
+          }
+        } else {
+          throw new Error(errorData.error || `Chat failed: ${response.status}`)
+        }
+      } else {
+        result = await response.json()
+      }
       
       const assistantResponse = result.response || result.message || 'I received your message but had trouble generating a response.'
 

@@ -52,9 +52,9 @@ export function createCase(caseData: SupplierChaseCase): void {
     INSERT INTO cases (
       case_id, po_number, line_id, supplier_name, supplier_email, supplier_domain,
       missing_fields, state, status, touch_count, last_action_at,
-      created_at, updated_at, meta
+      created_at, updated_at, meta, confirmation_status
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `)
   
@@ -72,7 +72,8 @@ export function createCase(caseData: SupplierChaseCase): void {
     caseData.last_action_at,
     caseData.created_at,
     caseData.updated_at,
-    JSON.stringify(caseData.meta)
+    JSON.stringify(caseData.meta),
+    caseData.confirmation_status ?? 'UNCONFIRMED'
   )
 }
 
@@ -105,6 +106,7 @@ export function getCase(case_id: string): SupplierChaseCase | null {
     next_check_at: row.next_check_at ?? null,
     last_inbox_check_at: row.last_inbox_check_at ?? null,
     meta: JSON.parse(row.meta || '{}'),
+    confirmation_status: row.confirmation_status ?? 'UNCONFIRMED',
   }
 }
 
@@ -132,6 +134,7 @@ export function getAllCases(): SupplierChaseCase[] {
     next_check_at: row.next_check_at ?? null,
     last_inbox_check_at: row.last_inbox_check_at ?? null,
     meta: JSON.parse(row.meta || '{}'),
+    confirmation_status: row.confirmation_status ?? 'UNCONFIRMED',
   }))
 }
 
@@ -164,6 +167,7 @@ export function findCaseByPoLine(po_number: string, line_id: string): SupplierCh
     next_check_at: row.next_check_at ?? null,
     last_inbox_check_at: row.last_inbox_check_at ?? null,
     meta: JSON.parse(row.meta || '{}'),
+    confirmation_status: row.confirmation_status ?? 'UNCONFIRMED',
   }
 }
 
@@ -233,7 +237,12 @@ export function updateCase(case_id: string, patch: SupplierChaseCaseUpdate): voi
     updates.push('meta = ?')
     values.push(JSON.stringify(patch.meta))
   }
-  
+  if (patch.confirmation_status !== undefined) {
+    updates.push('confirmation_status = ?')
+    values.push(patch.confirmation_status)
+    console.log('[STORE] updateCase: confirmation_status being set to', patch.confirmation_status, 'for case_id', case_id)
+  }
+
   // Always update updated_at if not explicitly set
   if (patch.updated_at === undefined) {
     updates.push('updated_at = ?')
@@ -245,8 +254,11 @@ export function updateCase(case_id: string, patch: SupplierChaseCaseUpdate): voi
   }
   
   values.push(case_id)
-  const stmt = db.prepare(`UPDATE cases SET ${updates.join(', ')} WHERE case_id = ?`)
-  stmt.run(...values)
+  const sql = `UPDATE cases SET ${updates.join(', ')} WHERE case_id = ?`
+  console.log('[STORE] updateCase SQL:', sql, 'values:', values)
+  const stmt = db.prepare(sql)
+  const result = stmt.run(...values)
+  console.log('[STORE] updateCase result:', { changes: result.changes, case_id })
 }
 
 /**

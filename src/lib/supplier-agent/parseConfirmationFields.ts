@@ -1,3 +1,5 @@
+import type { ConfirmationStatus } from './types'
+
 export type EvidenceSource = 'pdf' | 'email' | 'none'
 
 export type ParsedField<T> = {
@@ -1145,6 +1147,97 @@ export function parseConfirmationFieldsV1(input: ParseInput): ParsedConfirmation
   }
 
   return result
+}
+
+/**
+ * Derive confirmation_status from parsed fields.
+ * - UNCONFIRMED: missing supplier_order_number OR delivery_date
+ * - CONFIRMED_CLEAN: has both AND no mismatches (qty, date, UOM all match)
+ * - CONFIRMED_WITH_ISSUES: has both BUT has any mismatch
+ */
+export function deriveConfirmationStatus(
+  parsed: ParsedConfirmationFieldsV1,
+  options?: { expectedDueDate?: string | null }
+): ConfirmationStatus {
+  const hasOrderNumber = !!parsed.supplier_order_number.value
+  const hasDeliveryDate = !!parsed.confirmed_delivery_date.value
+  const hasQtyMismatch = parsed.quantity_mismatch.value === true
+  const hasPriceChange = parsed.price_changed?.value === true
+
+  // Check if confirmed delivery date is later than expected due date
+  let isDeliveryLate = false
+  if (hasDeliveryDate && options?.expectedDueDate) {
+    const confirmed = parsed.confirmed_delivery_date.value!
+    isDeliveryLate = confirmed > options.expectedDueDate
+  }
+
+  let status: ConfirmationStatus
+  if (!hasOrderNumber || !hasDeliveryDate) {
+    status = 'UNCONFIRMED'
+  } else if (hasQtyMismatch || hasPriceChange || isDeliveryLate) {
+    status = 'CONFIRMED_WITH_ISSUES'
+  } else {
+    status = 'CONFIRMED_CLEAN'
+  }
+
+  console.log('[CONFIRMATION_STATUS] deriveConfirmationStatus:', {
+    hasOrderNumber,
+    orderNumber: parsed.supplier_order_number.value,
+    hasDeliveryDate,
+    deliveryDate: parsed.confirmed_delivery_date.value,
+    hasQtyMismatch,
+    hasPriceChange,
+    isDeliveryLate,
+    expectedDueDate: options?.expectedDueDate ?? null,
+    result: status,
+  })
+
+  return status
+}
+
+/**
+ * Detect revision/correction keywords in email body text.
+ * Returns true if the text suggests this is a revised or corrected confirmation.
+ */
+const REVISION_KEYWORDS = /\b(correction|corrected|revised|revision|updated\s+(?:order|confirmation|quote)|supersedes?|please\s+disregard|amended|amendment|replace[sd]?|cancel(?:led|s)?\s+(?:and|&)\s+(?:re-?issue|replace))\b/i
+
+export function detectRevisionKeywords(text: string | null | undefined): boolean {
+  if (!text) return false
+  return REVISION_KEYWORDS.test(text)
+}
+
+export type PerPdfResult = {
+  attachment_id: string
+  result: ParsedConfirmationFieldsV1
+}
+
+/**
+ * Parse each PDF individually and return per-PDF results alongside the combined best result.
+ * Uses regex-only parsing (parseConfirmationFieldsV1) per PDF to avoid extra LLM calls.
+ * The `best` field uses the existing best-per-field strategy across all PDFs.
+ */
+export function parsePerPdfResults(input: ParseInput): {
+  perPdf: PerPdfResult[]
+  best: ParsedConfirmationFieldsV1
+} {
+  const pdfTexts = input.pdfTexts ?? []
+
+  // Per-PDF individual parsing
+  const perPdf: PerPdfResult[] = []
+  for (const pdf of pdfTexts) {
+    if (!pdf.text || pdf.text.trim().length === 0) continue
+    const result = parseConfirmationFieldsV1({
+      ...input,
+      pdfTexts: [pdf], // parse this single PDF
+      emailText: undefined, // isolate to PDF only
+    })
+    perPdf.push({ attachment_id: pdf.attachment_id, result })
+  }
+
+  // Combined best-per-field (existing behavior)
+  const best = parseConfirmationFieldsV1(input)
+
+  return { perPdf, best }
 }
 
 /**

@@ -17,6 +17,8 @@ export interface UnconfirmedPO {
   agent_activity_days: number // Days into current activity status
   next_escalation_date?: Date
   next_escalation_action?: string
+  order_date: Date | null   // PO creation date from ERP
+  due_date: Date | null     // Expected delivery date from ERP
 }
 
 /**
@@ -198,7 +200,9 @@ export function getUnconfirmedPOs(
         agent_activity_status: activity.status,
         agent_activity_days: activity.activityDays,
         next_escalation_date: activity.nextEscalationDate,
-        next_escalation_action: activity.nextEscalationAction
+        next_escalation_action: activity.nextEscalationAction,
+        order_date: row.order_date instanceof Date ? row.order_date : null,
+        due_date: row.due_date instanceof Date ? row.due_date : null,
       } satisfies UnconfirmedPO
     })
     .filter((po): po is UnconfirmedPO => po !== null)

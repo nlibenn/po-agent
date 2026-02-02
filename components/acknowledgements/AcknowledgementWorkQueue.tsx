@@ -5,6 +5,10 @@ import { useWorkspace } from '@/components/WorkspaceProvider'
 import { UnconfirmedPO, getUnconfirmedPOs } from '@/src/lib/unconfirmedPOs'
 import { ConfirmationRecord } from '@/src/lib/confirmedPOs'
 import { Search, X } from 'lucide-react'
+import type { ConfirmationStatus } from '@/src/lib/supplier-agent/types'
+import { daysUntilDelivery, daysSincePoCreated, formatCountdown } from '@/src/lib/utils/countdown'
+
+type FilterTab = 'unconfirmed' | 'confirmed'
 
 interface AcknowledgementWorkQueueProps {
   activeCaseId: string | null
@@ -107,16 +111,48 @@ export function AcknowledgementWorkQueue({
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [activeTab, setActiveTab] = useState<FilterTab>('unconfirmed')
+  const [caseStatuses, setCaseStatuses] = useState<Map<string, ConfirmationStatus>>(new Map())
+
+  // Split POs by tab based on case confirmation_status
+  const { tabUnconfirmed, tabConfirmed } = useMemo(() => {
+    const unconf: UnconfirmedPO[] = []
+    const conf: UnconfirmedPO[] = []
+    for (const po of unconfirmedPOs) {
+      const key = `${po.po_id}-${po.line_id || ''}`
+      const status = caseStatuses.get(key) ?? 'UNCONFIRMED'
+      if (status === 'CONFIRMED_CLEAN' || status === 'CONFIRMED_WITH_ISSUES') {
+        conf.push(po)
+      } else {
+        unconf.push(po)
+      }
+    }
+    // Sort unconfirmed by order_date ASC (oldest POs first need attention)
+    unconf.sort((a, b) => {
+      const dateA = a.order_date ? a.order_date.getTime() : Infinity
+      const dateB = b.order_date ? b.order_date.getTime() : Infinity
+      return dateA - dateB
+    })
+    // Sort confirmed by due_date ASC (soonest delivery first)
+    conf.sort((a, b) => {
+      const dateA = a.due_date ? a.due_date.getTime() : Infinity
+      const dateB = b.due_date ? b.due_date.getTime() : Infinity
+      return dateA - dateB
+    })
+    return { tabUnconfirmed: unconf, tabConfirmed: conf }
+  }, [unconfirmedPOs, caseStatuses, confirmationRecords])
+
+  const tabPOs = activeTab === 'unconfirmed' ? tabUnconfirmed : tabConfirmed
 
   const filteredPOs = useMemo(() => {
-    if (!searchTerm.trim()) return unconfirmedPOs
+    if (!searchTerm.trim()) return tabPOs
 
     const term = searchTerm.toLowerCase()
-    return unconfirmedPOs.filter(po =>
+    return tabPOs.filter(po =>
       po.po_id.toLowerCase().includes(term) ||
       (po.supplier_name || '').toLowerCase().includes(term)
     )
-  }, [unconfirmedPOs, searchTerm])
+  }, [tabPOs, searchTerm])
 
   // Keep selectedIndex in bounds when filtering changes (primitive dep only)
   useEffect(() => {
@@ -223,17 +259,48 @@ export function AcknowledgementWorkQueue({
     fetchConfirmationRecords()
   }, [fetchConfirmationRecords])
 
+  // Fetch case confirmation_status from bulk API
+  const fetchCaseStatuses = useCallback(async () => {
+    if (!normalizedRows || normalizedRows.length === 0) {
+      setCaseStatuses(new Map())
+      return
+    }
+    try {
+      const poLines = normalizedRows.map(r => `${r.po_id}-${r.line_id || ''}`)
+      const response = await fetch('/api/cases/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ poLines }),
+      })
+      if (!response.ok) return
+      const data = await response.json()
+      const cases = (data.cases || {}) as Record<string, { confirmation_status?: ConfirmationStatus }>
+      const map = new Map<string, ConfirmationStatus>()
+      for (const [key, info] of Object.entries(cases)) {
+        map.set(key, info.confirmation_status ?? 'UNCONFIRMED')
+      }
+      setCaseStatuses(map)
+    } catch (error) {
+      console.error('Error fetching case statuses:', error)
+    }
+  }, [normalizedRows])
+
+  useEffect(() => {
+    fetchCaseStatuses()
+  }, [fetchCaseStatuses])
+
   // Listen for confirmation record updates (from apply action)
   useEffect(() => {
     const handleUpdate = () => {
       fetchConfirmationRecords()
+      fetchCaseStatuses()
     }
 
     window.addEventListener('confirmationRecordUpdated', handleUpdate)
     return () => {
       window.removeEventListener('confirmationRecordUpdated', handleUpdate)
     }
-  }, [fetchConfirmationRecords])
+  }, [fetchConfirmationRecords, fetchCaseStatuses])
 
   // Compute unconfirmed POs with new sorting logic
   useEffect(() => {
@@ -279,7 +346,7 @@ export function AcknowledgementWorkQueue({
     onQueueLoadedRef.current?.(sorted)
   }, [normalizedRows, confirmationRecords])
 
-  const needsCount = unconfirmedPOs.length
+  const displayCount = filteredPOs.length
 
   return (
     <div className="h-full flex flex-col bg-surface border-r border-border/50">
@@ -288,8 +355,38 @@ export function AcknowledgementWorkQueue({
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium text-text">Work Queue</h2>
           <span className="text-xs text-text-subtle bg-surface-2 px-2 py-0.5 rounded-full">
-            {needsCount} need{needsCount !== 1 ? 's' : ''} ack
+            {activeTab === 'unconfirmed'
+              ? `${tabUnconfirmed.length} need${tabUnconfirmed.length !== 1 ? 's' : ''} ack`
+              : `${tabConfirmed.length} confirmed`}
           </span>
+        </div>
+      </div>
+
+      {/* Filter tabs */}
+      <div className="flex-shrink-0 px-3 py-2 border-b border-border/50">
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            onClick={() => { setActiveTab('unconfirmed'); setSelectedIndex(0) }}
+            className={`px-2.5 py-1 text-xs font-medium rounded-full transition-colors ${
+              activeTab === 'unconfirmed'
+                ? 'bg-surface-2 text-text border border-border/50'
+                : 'bg-transparent text-text-muted hover:bg-surface-2/50 border border-transparent'
+            }`}
+          >
+            Unconfirmed ({tabUnconfirmed.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => { setActiveTab('confirmed'); setSelectedIndex(0) }}
+            className={`px-2.5 py-1 text-xs font-medium rounded-full transition-colors ${
+              activeTab === 'confirmed'
+                ? 'bg-surface-2 text-text border border-border/50'
+                : 'bg-transparent text-text-muted hover:bg-surface-2/50 border border-transparent'
+            }`}
+          >
+            Confirmed ({tabConfirmed.length})
+          </button>
         </div>
       </div>
 
@@ -339,10 +436,10 @@ export function AcknowledgementWorkQueue({
         ) : filteredPOs.length === 0 ? (
           <div className="px-4 py-8 text-center">
             <div className="text-xs text-text-subtle">
-              {searchTerm.trim() ? 'No matches' : 'No unconfirmed POs'}
+              {searchTerm.trim() ? 'No matches' : activeTab === 'confirmed' ? 'No confirmed POs' : 'No unconfirmed POs'}
             </div>
             <p className="text-[10px] text-text-subtle/70 mt-1">
-              {searchTerm.trim() ? 'Try a different search term' : 'Upload PO data in Drive to get started'}
+              {searchTerm.trim() ? 'Try a different search term' : activeTab === 'confirmed' ? 'Confirmed POs will appear here' : 'Upload PO data in Drive to get started'}
             </p>
           </div>
         ) : (
@@ -373,7 +470,7 @@ export function AcknowledgementWorkQueue({
                         : 'hover:bg-surface-2/50'
                   }`}
                 >
-                  {/* Row 1: PO + Supplier (inline) */}
+                  {/* Row 1: PO + Supplier + Countdown */}
                   <div className="flex items-center min-w-0 gap-1.5">
                     <span className="text-sm font-medium text-text shrink-0">
                       {po.po_id}{po.line_id ? `-${po.line_id}` : ''}
@@ -382,6 +479,24 @@ export function AcknowledgementWorkQueue({
                     <span className="text-sm text-text-muted font-normal truncate min-w-0">
                       {po.supplier_name || 'Unknown supplier'}
                     </span>
+                    {/* Countdown badge */}
+                    {(() => {
+                      if (activeTab === 'unconfirmed' && po.due_date) {
+                        const days = daysUntilDelivery(po.due_date)
+                        if (days === null) return null
+                        const label = formatCountdown(days, 'until')
+                        const color = days < 0 ? 'text-red-500' : days <= 7 ? 'text-amber-500' : 'text-text-subtle'
+                        return <span className={`ml-auto shrink-0 text-[10px] font-medium ${color}`}>{label}</span>
+                      }
+                      if (activeTab === 'confirmed' && po.due_date) {
+                        const days = daysUntilDelivery(po.due_date)
+                        if (days === null) return null
+                        const label = formatCountdown(days, 'until')
+                        const color = days < 0 ? 'text-red-500' : days <= 7 ? 'text-amber-500' : 'text-emerald-500'
+                        return <span className={`ml-auto shrink-0 text-[10px] font-medium ${color}`}>{label}</span>
+                      }
+                      return null
+                    })()}
                   </div>
 
                   {/* Row 2: Needs tokens */}

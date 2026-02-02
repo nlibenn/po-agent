@@ -48,6 +48,8 @@ export type EventType =
   | 'AGENT_EMAIL_SENT'
   | 'AGENT_EMAIL_SKIPPED'
 
+export type ConfirmationStatus = 'UNCONFIRMED' | 'CONFIRMED_CLEAN' | 'CONFIRMED_WITH_ISSUES'
+
 export type MessageDirection = 'INBOUND' | 'OUTBOUND'
 
 export interface SupplierChaseCase {
@@ -67,6 +69,7 @@ export interface SupplierChaseCase {
   next_check_at: number | null // epoch ms, NULL means no scheduled check
   last_inbox_check_at: number | null // epoch ms, observability only
   meta: Record<string, any> // JSON blob
+  confirmation_status: ConfirmationStatus
 }
 
 export interface SupplierChaseMessage {
@@ -120,3 +123,20 @@ export type SupplierChaseAttachmentInput = Omit<SupplierChaseAttachment, 'attach
 
 // Type for creating attachments where message_id is provided separately
 export type SupplierChaseAttachmentCreateInput = Omit<SupplierChaseAttachmentInput, 'message_id'> & { attachment_id?: string }
+
+// Multi-confirmation types
+export type MultiConfirmationStatus = 'single' | 'consistent' | 'revision_detected' | 'conflict'
+
+export interface ConfirmationHistoryEntry {
+  attachment_id: string
+  filename?: string
+  parsed_at: number // epoch ms
+  fields: {
+    supplier_order_number: { value: string | null; confidence: number }
+    confirmed_delivery_date: { value: string | null; confidence: number }
+    confirmed_quantity: { value: number | null; confidence: number }
+  }
+  evidence_source: 'pdf' | 'email' | 'none'
+  revision_detected: boolean
+  message_id?: string | null
+}
