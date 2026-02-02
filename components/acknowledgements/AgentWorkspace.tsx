@@ -61,6 +61,7 @@ interface AgentWorkspaceProps {
   lineId?: string
   supplierName?: string
   supplierEmail?: string
+  orderQty?: number | null
   onAgentResult: (result: AgentResult | null) => void
   onRunningChange: (running: boolean) => void
   onCaseUpdated?: () => void // Callback when case is updated (e.g., after apply)
@@ -80,6 +81,7 @@ export function AgentWorkspace({
   poNumber,
   lineId,
   supplierName,
+  orderQty,
   supplierEmail,
   onAgentResult,
   onRunningChange,
@@ -716,7 +718,7 @@ export function AgentWorkspace({
           const resolveRes = await fetch('/api/cases/resolve', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ poNumber, lineId: lineId || '' }),
+            body: JSON.stringify({ poNumber, lineId: lineId || '', orderQty: orderQty ?? null }),
           })
           const resolveData = resolveRes.ok ? await resolveRes.json() : null
           if (resolveData?.ok && resolveData.caseId) {

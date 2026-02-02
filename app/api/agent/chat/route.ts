@@ -1641,13 +1641,24 @@ export async function POST(request: NextRequest) {
         resolvedCaseId = providedCaseId
         console.log('[AGENT_CHAT] DIRECT lookup success:', caseData.po_number)
       } else {
-        console.log('[AGENT_CHAT] Direct lookup failed for caseId:', providedCaseId)
+        // Retry once after 200ms to handle race condition with /api/cases/resolve
+        console.log('[AGENT_CHAT] Direct lookup failed for caseId, retrying in 200ms:', providedCaseId)
+        await new Promise(r => setTimeout(r, 200))
+        const retryRow = db.prepare('SELECT * FROM cases WHERE case_id = ?').get(providedCaseId) as any
+        if (retryRow) {
+          caseData = caseDataFromRow(retryRow)
+          resolvedCaseId = providedCaseId
+          console.log('[AGENT_CHAT] Retry lookup SUCCESS:', caseData.po_number)
+        } else {
+          console.warn('[AGENT_CHAT] Retry lookup also failed for caseId:', providedCaseId)
+        }
       }
     }
-    
-    // Fallback: use client-provided PO context when SQLite lookup fails (Vercel ephemeral /tmp)
+
+    // Fallback: use client-provided PO context ONLY when DB is truly unavailable (Vercel ephemeral /tmp).
+    // Log a critical warning since meta will be incomplete (no po_line.ordered_quantity).
     if (!caseData && clientPoNumber) {
-      console.log('[AGENT_CHAT] Using client-provided PO context as fallback:', { clientPoNumber, clientLineId })
+      console.warn('[AGENT_CHAT] DEGRADED: Using client-provided PO context as fallback (meta will be empty):', { clientPoNumber, clientLineId, providedCaseId })
       const now = Date.now()
       caseData = {
         case_id: providedCaseId || `fallback-${now}`,
@@ -1752,12 +1763,16 @@ export async function POST(request: NextRequest) {
       resolvedCaseId = correctedCaseId
     }
     
-    // Final verification: ensure case exists in database
-
+    // Final verification: ensure case exists in database (with one retry)
     const dbForVerification = getDb()
-    const finalCaseCheck = dbForVerification.prepare('SELECT case_id FROM cases WHERE case_id = ?').get(caseId) as { case_id: string } | undefined
+    let finalCaseCheck = dbForVerification.prepare('SELECT case_id FROM cases WHERE case_id = ?').get(caseId) as { case_id: string } | undefined
     if (!finalCaseCheck) {
-      console.error('[AGENT_CHAT] CRITICAL: CaseId does not exist in database:', {
+      console.warn('[AGENT_CHAT] Final verification failed, retrying in 200ms:', { caseId })
+      await new Promise(r => setTimeout(r, 200))
+      finalCaseCheck = dbForVerification.prepare('SELECT case_id FROM cases WHERE case_id = ?').get(caseId) as { case_id: string } | undefined
+    }
+    if (!finalCaseCheck) {
+      console.error('[AGENT_CHAT] CRITICAL: CaseId does not exist in database after retry:', {
         caseId,
         caseDataCaseId: caseData.case_id,
         poNumber: caseData.po_number,
@@ -1765,8 +1780,8 @@ export async function POST(request: NextRequest) {
       })
       return NextResponse.json({
         error: 'CASE_NOT_FOUND',
-        response: `Case not found in database. Please wait a moment and try again.`,
-        message: `Case not found in database. Please wait a moment and try again.`,
+        response: `Case not found. Please re-select the PO from the work queue.`,
+        message: `Case not found. Please re-select the PO from the work queue.`,
         tool_calls: [],
         case_state: null,
         poNumber: caseData.po_number,

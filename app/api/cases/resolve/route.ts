@@ -49,9 +49,20 @@ export async function POST(request: NextRequest) {
         },
       }
 
-      // Log warning if ordered_quantity is missing
-      if (meta.po_line.ordered_quantity === null) {
-        console.warn('[CASES_RESOLVE] Creating case without ordered_quantity', { caseId, poNumber, lineId })
+      // Log warnings for missing fields that affect downstream processing
+      const missingMetaFields: string[] = []
+      if (meta.po_line.ordered_quantity === null) missingMetaFields.push('ordered_quantity')
+      if (meta.po_line.unit_price === null) missingMetaFields.push('unit_price')
+      if (meta.po_line.uom === null) missingMetaFields.push('uom')
+
+      if (missingMetaFields.length > 0) {
+        console.warn('[CASES_RESOLVE] Case created with missing meta fields:', {
+          caseId,
+          poNumber,
+          lineId,
+          missingMetaFields,
+          rawInputs: { orderQty, unitPrice, uom },
+        })
       }
 
       createCase({

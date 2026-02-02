@@ -61,6 +61,7 @@ export default function AcknowledgementsPage() {
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null) // Resolved DB case_id
   const [activeCaseKey, setActiveCaseKey] = useState<string | null>(null) // PO-LINE key for UI
   const [activePO, setActivePO] = useState<UnconfirmedPO | null>(null)
+  const [activeOrderQty, setActiveOrderQty] = useState<number | null>(null)
   
   
   // Agent state
@@ -154,13 +155,16 @@ export default function AcknowledgementsPage() {
       if (data.ok && data.caseId) {
         console.log('[ACK_PAGE] Case resolved, caseId:', data.caseId)
         setActiveCaseId(data.caseId)
+        setActiveOrderQty(poRow?.order_qty ?? null)
       } else {
         console.error('[ACK_PAGE] Invalid resolve response:', data)
         setActiveCaseId(null)
+        setActiveOrderQty(null)
       }
     } catch (error) {
       console.error('[ACK_PAGE] Error resolving case:', error)
       setActiveCaseId(null)
+      setActiveOrderQty(null)
     }
   }, [normalizedRows])
 
@@ -253,6 +257,7 @@ export default function AcknowledgementsPage() {
           isRunning={isRunning}
           attachments={attachments}
           supplierEmail={supplierEmail}
+          activeOrderQty={activeOrderQty}
           onSelectCase={handleSelectCase}
           onAgentResult={handleAgentResult}
           onRunningChange={setIsRunning}
@@ -274,6 +279,7 @@ function AcknowledgementsPageInner({
   isRunning,
   attachments,
   supplierEmail,
+  activeOrderQty,
   onSelectCase,
   onAgentResult,
   onRunningChange,
@@ -289,6 +295,7 @@ function AcknowledgementsPageInner({
   isRunning: boolean
   attachments: Array<{ attachment_id: string; filename: string; mime_type: string; text_extract?: string | null }>
   supplierEmail?: string
+  activeOrderQty: number | null
   onSelectCase: (caseKey: string, po: UnconfirmedPO) => void
   onAgentResult: (result: AgentResult | null) => void
   onRunningChange: (running: boolean) => void
@@ -475,6 +482,7 @@ function AcknowledgementsPageInner({
             lineId={activePO?.line_id}
             supplierName={activePO?.supplier_name}
             supplierEmail={supplierEmail}
+            orderQty={activeOrderQty ?? undefined}
             onAgentResult={onAgentResult}
             onRunningChange={onRunningChange}
             onCaseUpdated={onCaseUpdated}
