@@ -102,6 +102,12 @@ export function AgentStatePanel({
   } | null>(null)
   const [caseDetailsRefreshTrigger, setCaseDetailsRefreshTrigger] = useState(0)
 
+  // Stabilize attachments reference — only change when content actually changes
+  const attachmentsKey = useMemo(
+    () => attachments.map(a => a.attachment_id).sort().join(','),
+    [attachments]
+  )
+
   // Check Gmail connection status
   // FIXED: Removed agentState from dependencies (it's a context object that changes identity)
   useEffect(() => {
@@ -135,7 +141,8 @@ export function AgentStatePanel({
     return () => window.removeEventListener('confirmationRecordUpdated', handler)
   }, [caseId])
 
-  // Fetch case details for PO History timeline; refetch when caseId, attachments, or refresh trigger change
+  // Fetch case details for PO History timeline; refetch when caseId, attachments content, or refresh trigger change.
+  // Uses attachmentsKey (stable string) instead of attachments array to avoid re-fetch on every parent render.
   useEffect(() => {
     if (!caseId) {
       setCaseDetails(null)
@@ -144,6 +151,8 @@ export function AgentStatePanel({
 
     const controller = new AbortController()
     lastLoggedCaseIdRef.current = null
+    // Track which caseId this fetch is for — prevents stale responses from overwriting newer data
+    const fetchForCaseId = caseId
 
     const fetchCaseDetails = async () => {
       // #region agent log
@@ -156,20 +165,35 @@ export function AgentStatePanel({
 
         if (response.ok) {
           const data = await response.json()
+          // Guard: don't apply response if caseId has changed since fetch started
+          if (controller.signal.aborted) return
           // #region agent log
           const v1 = data.parsed_best_fields_v1 ?? data.case?.meta?.parsed_best_fields_v1
           const flat = data.parsed_best_fields
           const applied = data.case?.meta?.confirmation_fields_applied?.fields
           const rec = data.confirmation_record
           const pdfCount = attachments.filter((a: { mime_type?: string }) => a.mime_type === 'application/pdf').length
-          fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AgentStatePanel.tsx:fetchCaseDetails',message:'case details fetch completed',data:{caseId,hasV1:!!v1,hasV1Fields:!!(v1?.fields),v1FieldKeys:v1?.fields?Object.keys(v1.fields):[],hasFlat:!!flat,flatKeys:flat?Object.keys(flat):[],hasApplied:!!applied,appliedFieldKeys:applied?Object.keys(applied):[],hasRecord:!!rec,recordHasSO:!!(rec?.supplier_order_number),recordHasDate:!!(rec?.confirmed_ship_date),recordHasQty:rec?.confirmed_quantity!=null,caseState:data.case?.state,pdfCount,hasPdfsNoParsed:pdfCount>0&&!v1?.fields},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H2'})}).catch(()=>{});
+          fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AgentStatePanel.tsx:fetchCaseDetails',message:'case details fetch completed',data:{caseId:fetchForCaseId,hasV1:!!v1,hasV1Fields:!!(v1?.fields),v1FieldKeys:v1?.fields?Object.keys(v1.fields):[],hasFlat:!!flat,flatKeys:flat?Object.keys(flat):[],hasApplied:!!applied,appliedFieldKeys:applied?Object.keys(applied):[],hasRecord:!!rec,recordHasSO:!!(rec?.supplier_order_number),recordHasDate:!!(rec?.confirmed_ship_date),recordHasQty:rec?.confirmed_quantity!=null,caseState:data.case?.state,pdfCount,hasPdfsNoParsed:pdfCount>0&&!v1?.fields},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H2'})}).catch(()=>{});
           // #endregion
-          setCaseDetails({
-            case: data.case,
-            recent_events: data.recent_events || [],
-            parsed_best_fields: data.parsed_best_fields || null,
-            parsed_best_fields_v1: data.parsed_best_fields_v1 || null,
-            confirmation_record: data.confirmation_record || null,
+
+          // Merge: don't overwrite existing data with a response that has fewer fields
+          setCaseDetails(prev => {
+            const next = {
+              case: data.case,
+              recent_events: data.recent_events || [],
+              parsed_best_fields: data.parsed_best_fields || null,
+              parsed_best_fields_v1: data.parsed_best_fields_v1 || null,
+              confirmation_record: data.confirmation_record || null,
+            }
+            // If switching cases, always take the new data
+            if (!prev || prev.case?.case_id !== fetchForCaseId) return next
+            // If new response has parsed fields or previous didn't, take new
+            const prevHasFields = !!(prev.parsed_best_fields_v1?.fields || prev.confirmation_record?.supplier_order_number)
+            const nextHasFields = !!(next.parsed_best_fields_v1?.fields || next.confirmation_record?.supplier_order_number)
+            if (nextHasFields || !prevHasFields) return next
+            // Otherwise keep existing richer data and only update events
+            console.log('[AgentStatePanel] Keeping richer existing caseDetails, only updating events')
+            return { ...prev, recent_events: next.recent_events }
           })
         }
       } catch (err: any) {
@@ -181,10 +205,9 @@ export function AgentStatePanel({
 
     fetchCaseDetails()
     return () => controller.abort()
-  }, [caseId, attachments, caseDetailsRefreshTrigger])
+  }, [caseId, attachmentsKey, caseDetailsRefreshTrigger])
 
-  // Update PDFs in data sources when attachments change
-  // FIXED: Removed agentState from dependencies
+  // Update PDFs in data sources when attachment content actually changes (via stable attachmentsKey)
   useEffect(() => {
     const pdfs = attachments
       .filter(att => att.mime_type === 'application/pdf')
@@ -196,7 +219,8 @@ export function AgentStatePanel({
     fetch('http://127.0.0.1:7242/ingest/e9196934-1c8b-40c5-8b00-c00b336a7d56',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AgentStatePanel.tsx:attachments',message:'attachments updated',data:{caseId,attachmentCount:attachments.length,pdfCount:pdfs.length},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H3'})}).catch(()=>{});
     // #endregion
     setPDFs(pdfs)
-  }, [attachments, setPDFs, caseId])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- attachmentsKey is the stable proxy for attachments content
+  }, [attachmentsKey, setPDFs, caseId])
 
   // Update current task when case changes
   // FIXED: Removed agentState from dependencies

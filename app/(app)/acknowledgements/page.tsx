@@ -98,21 +98,29 @@ export default function AcknowledgementsPage() {
       return
     }
 
+    const controller = new AbortController()
+
     const loadAttachments = async () => {
       try {
-        // Load attachments using resolved caseId
-        const attachmentsResponse = await fetch(`/api/confirmations/attachments/list?caseId=${encodeURIComponent(activeCaseId)}`)
+        const attachmentsResponse = await fetch(
+          `/api/confirmations/attachments/list?caseId=${encodeURIComponent(activeCaseId)}`,
+          { signal: controller.signal }
+        )
+        if (controller.signal.aborted) return
         if (attachmentsResponse.ok) {
           const data = await attachmentsResponse.json()
           const atts = data.attachments || []
           setAttachments(atts.filter((a: any) => a.mime_type === 'application/pdf'))
         }
-      } catch (error) {
-        console.error('Error loading attachments:', error)
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') {
+          console.error('Error loading attachments:', error)
+        }
       }
     }
 
     loadAttachments()
+    return () => controller.abort()
   }, [activeCaseId])
 
   // Handle case selection

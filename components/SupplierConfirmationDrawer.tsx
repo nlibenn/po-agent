@@ -257,6 +257,9 @@ export function SupplierConfirmationDrawer({
   useEffect(() => {
     if (!open) return
 
+    const abortController = new AbortController()
+    const signal = abortController.signal
+
     const loadData = async () => {
       setLoading(true)
       setError(null)
@@ -274,6 +277,7 @@ export function SupplierConfirmationDrawer({
             supplierEmail,
             missingFields: ['delivery_date', 'supplier_reference'],
           }),
+          signal,
         })
 
         if (!upsertResponse.ok) {
@@ -281,13 +285,15 @@ export function SupplierConfirmationDrawer({
         }
 
         const { caseId: newCaseId, case: caseData } = await upsertResponse.json()
+        if (signal.aborted) return
         setCaseId(newCaseId)
         let currentMissingFields = caseData.missing_fields || ['delivery_date']
         setMissingFields(currentMissingFields)
 
         // 2. Load existing attachments from DB (before Gmail retrieval)
         try {
-          const dbAttachmentsResponse = await fetch(`/api/confirmations/attachments/list?caseId=${encodeURIComponent(newCaseId)}`)
+          const dbAttachmentsResponse = await fetch(`/api/confirmations/attachments/list?caseId=${encodeURIComponent(newCaseId)}`, { signal })
+          if (signal.aborted) return
           if (dbAttachmentsResponse.ok) {
             const dbData = (await dbAttachmentsResponse.json()) as any
             const dbAttachments = (Array.isArray(dbData?.attachments) ? dbData.attachments : []) as Array<{
@@ -328,9 +334,11 @@ export function SupplierConfirmationDrawer({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ caseId: newCaseId }),
+            signal,
           })
 
           if (inboxResponse.ok) {
+            if (signal.aborted) return
             const inboxData = (await inboxResponse.json()) as any
 
             const extracted = (inboxData?.extractedFields || {}) as {
@@ -376,15 +384,17 @@ export function SupplierConfirmationDrawer({
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ caseId: newCaseId, threadId: matchedThreadId }),
+              signal,
             })
 
             if (attachmentsResponse.ok) {
+              if (signal.aborted) return
               setGmailRetrieved(true)
-              
+
               // ALWAYS refetch from DB after retrieval (DB is source of truth)
               // Do NOT merge Gmail results into state; just refetch DB list
               try {
-                const dbRefreshResponse = await fetch(`/api/confirmations/attachments/list?caseId=${encodeURIComponent(newCaseId)}`)
+                const dbRefreshResponse = await fetch(`/api/confirmations/attachments/list?caseId=${encodeURIComponent(newCaseId)}`, { signal })
                 if (dbRefreshResponse.ok) {
                   const dbRefreshData = (await dbRefreshResponse.json()) as any
                   const dbRefreshAttachments = (Array.isArray(dbRefreshData?.attachments) ? dbRefreshData.attachments : []) as Array<{
@@ -545,8 +555,10 @@ export function SupplierConfirmationDrawer({
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ caseId: newCaseId }),
+              signal,
             })
             if (resp.ok) {
+              if (signal.aborted) return
               const data = await resp.json()
               const parsed = data.parsed || null
               const normalized = normalizeParsedFields(parsed)
@@ -560,7 +572,7 @@ export function SupplierConfirmationDrawer({
                 
                 // Refetch case details to get updated parsed_best_fields_v1 from DB
                 try {
-                  const detailsResp = await fetch(`/api/confirmations/case/${newCaseId}`)
+                  const detailsResp = await fetch(`/api/confirmations/case/${newCaseId}`, { signal })
                   if (detailsResp.ok) {
                     const details: CaseDetails = await detailsResp.json()
                     setCaseDetails(details)
@@ -595,8 +607,10 @@ export function SupplierConfirmationDrawer({
         }
 
         // 3. Fetch case details (events, messages)
-        const detailsResponse = await fetch(`/api/confirmations/case/${newCaseId}`)
+        if (signal.aborted) return
+        const detailsResponse = await fetch(`/api/confirmations/case/${newCaseId}`, { signal })
         if (detailsResponse.ok) {
+          if (signal.aborted) return
           const details: CaseDetails = await detailsResponse.json()
           setCaseDetails(details)
           setEvents(details.events || [])
@@ -683,8 +697,9 @@ export function SupplierConfirmationDrawer({
         }
 
         // 5. Fetch current confirmation record (for diff gating)
+        if (signal.aborted) return
         try {
-          const resp = await fetch(`/api/confirmations/records?poIds=${encodeURIComponent(poNumber)}`)
+          const resp = await fetch(`/api/confirmations/records?poIds=${encodeURIComponent(poNumber)}`, { signal })
           if (resp.ok) {
             const records = (await resp.json()) as any[]
             const rec = records.find(r => r?.po_id === poNumber && String(r?.line_id) === String(lineId)) || null
@@ -693,15 +708,21 @@ export function SupplierConfirmationDrawer({
         } catch (e) {
           // best-effort
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return
         console.error('Error loading drawer data:', err)
-        setError(err instanceof Error ? err.message : 'Failed to load data')
+        if (!signal.aborted) {
+          setError(err instanceof Error ? err.message : 'Failed to load data')
+        }
       } finally {
-        setLoading(false)
+        if (!signal.aborted) {
+          setLoading(false)
+        }
       }
     }
 
     loadData()
+    return () => abortController.abort()
   }, [open, poNumber, lineId, supplierName, supplierEmail])
 
   // Cleanup follow-up draft refs when drawer closes or caseId changes
@@ -784,6 +805,7 @@ export function SupplierConfirmationDrawer({
 
   // Regenerate email draft when missingFields change (only for initial mode)
   useEffect(() => {
+    let cancelled = false
     // Only generate draft if we don't have supplier evidence (initial mode)
     const shouldGenerateDraft = !hasSupplierEvidence && missingFields.length > 0 && poNumber && lineId && supplierEmail
     if (shouldGenerateDraft) {
@@ -794,14 +816,15 @@ export function SupplierConfirmationDrawer({
         supplierEmail,
         missingFields,
       }).then(draft => {
-        setEmailDraft(draft)
+        if (!cancelled) setEmailDraft(draft)
       }).catch(err => {
-        console.error('Error generating email draft:', err)
+        if (!cancelled) console.error('Error generating email draft:', err)
       })
     } else if (hasSupplierEvidence) {
       // Clear email draft when we have supplier evidence (will use followup draft instead)
       setEmailDraft(null)
     }
+    return () => { cancelled = true }
   }, [hasSupplierEvidence, missingFields, poNumber, lineId, supplierName, supplierEmail])
 
   // Debug log when mode is computed
