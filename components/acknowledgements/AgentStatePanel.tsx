@@ -322,20 +322,10 @@ export function AgentStatePanel({
   const caseState: string | null = (caseDetails?.case?.state ?? null) as string | null
   const isAwaitingSupplierReply =
     caseState === 'OUTREACH_SENT' || caseState === 'WAITING' || caseState === 'FOLLOWUP_SENT'
+  const isNotYetChecked = caseState === 'INBOX_LOOKUP' || caseState === null
 
   return (
     <div className="h-full flex flex-col bg-surface-2/30 border-l border-border/50">
-      {/* Header */}
-      <div className="flex-shrink-0 px-4 py-3 border-b border-border/50 bg-surface">
-        <h2 className="text-sm font-medium text-text">Agent State</h2>
-        {isRunning && (
-          <div className="flex items-center gap-1.5 mt-1">
-            <div className="w-2 h-2 rounded-full bg-primary-deep animate-pulse" />
-            <span className="text-xs text-text-muted">Processing...</span>
-          </div>
-        )}
-      </div>
-
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto">
         {/* CONFIRMATION DETAILS */}
@@ -372,45 +362,104 @@ export function AgentStatePanel({
               const flat = caseDetails?.parsed_best_fields
               const applied = caseDetails?.case?.meta?.confirmation_fields_applied?.fields
               const rec = caseDetails?.confirmation_record
-              const soParsed = parsed?.fields?.supplier_order_number?.value ?? flat?.supplier_order_number
+
+              // Helper: detect non-numeric "pending" values like TBD, N/A, Pending, etc.
+              const isPendingValue = (val: unknown): boolean => {
+                if (val == null) return false
+                const str = String(val).trim().toUpperCase()
+                return ['TBD', 'TBA', 'N/A', 'NA', 'PENDING', 'TO BE DETERMINED', 'TO BE ADVISED', '-'].includes(str)
+              }
+
+              // Helper: get raw string value (preserves TBD, etc.)
+              const getRawValue = (parsedVal: unknown, flatVal: unknown, recVal: unknown): string | number | null => {
+                // Priority: parsed > flat > record
+                if (parsedVal != null) return parsedVal as string | number
+                if (flatVal != null) return flatVal as string | number
+                if (recVal != null && recVal !== '') return recVal as string | number
+                return null
+              }
+
+              // Supplier Order Number: preserve raw value
+              const soRawParsed = parsed?.fields?.supplier_order_number?.value ?? flat?.supplier_order_number
               const soApplied = applied?.supplier_reference?.value
               const soRec = rec?.supplier_order_number
-              const soValue = soParsed ?? soApplied ?? (soRec != null && soRec !== '' ? soRec : null)
-              const dateParsed = parsed?.fields?.confirmed_delivery_date?.value ?? flat?.confirmed_delivery_date
+              const soRaw = getRawValue(soRawParsed, soApplied, soRec)
+              const soIsPending = isPendingValue(soRaw)
+              const soValue = soIsPending ? null : (soRaw != null && soRaw !== '' ? String(soRaw) : null)
+
+              // Delivery Date: preserve raw value
+              const dateRawParsed = parsed?.fields?.confirmed_delivery_date?.value ?? flat?.confirmed_delivery_date
               const dateApplied = applied?.delivery_date?.value
               const dateRec = rec?.confirmed_ship_date
-              const dateValue = dateParsed ?? dateApplied ?? (dateRec != null && dateRec !== '' ? dateRec : null)
-              const qtyParsed = parsed?.fields?.confirmed_quantity?.value ?? (flat?.confirmed_quantity != null ? flat.confirmed_quantity : null)
-              const qtyApplied = applied?.quantity?.value != null ? applied.quantity.value : null
-              const qtyRec = rec?.confirmed_quantity != null ? rec.confirmed_quantity : null
-              const qtyValue = qtyParsed ?? qtyApplied ?? qtyRec
+              const dateRaw = getRawValue(dateRawParsed, dateApplied, dateRec)
+              const dateIsPending = isPendingValue(dateRaw)
+              const dateValue = dateIsPending ? null : (dateRaw != null && dateRaw !== '' ? String(dateRaw) : null)
+
+              // Quantity: preserve raw string value (e.g., "TBD") before numeric conversion
+              const qtyRawParsed = parsed?.fields?.confirmed_quantity?.value
+              const qtyRawFlat = flat?.confirmed_quantity
+              const qtyRawRec = rec?.confirmed_quantity
+              const qtyRaw = getRawValue(qtyRawParsed, qtyRawFlat, qtyRawRec)
+              const qtyIsPending = isPendingValue(qtyRaw)
+
+              // For numeric comparisons, only use actual numbers
+              const qtyNumeric = typeof qtyRaw === 'number' ? qtyRaw
+                : (qtyRaw != null && !qtyIsPending ? Number(qtyRaw) : null)
+              const qtyValue = (qtyNumeric != null && !isNaN(qtyNumeric)) ? qtyNumeric : null
 
               // Classify each field as confirmed (green check) or not
               type FieldItem = { key: string; element: React.ReactNode; isConfirmed: boolean }
               const fields: FieldItem[] = []
 
               // Supplier Reference
-              const soConfirmed = !!soValue
-              fields.push({
-                key: 'so',
-                isConfirmed: soConfirmed,
-                element: soValue ? (
+              let soElement: React.ReactNode
+              let soIsConfirmed = !!soValue
+
+              if (soIsPending && soRaw != null) {
+                // Pending value like "TBD" - show verbatim with neutral styling
+                soIsConfirmed = false
+                soElement = (
+                  <li className="flex items-center gap-2">
+                    <span className="text-text-muted">—</span>
+                    <span className="text-text">Supplier Reference: </span>
+                    <span className="text-text-muted italic">{String(soRaw)}</span>
+                  </li>
+                )
+              } else if (soValue) {
+                soElement = (
                   <li className="flex items-center gap-2">
                     <span className="text-success">✓</span>
                     <span className="text-text">Supplier Reference: </span>
                     <span className="text-text font-medium">{soValue}</span>
                   </li>
-                ) : isAwaitingSupplierReply ? (
+                )
+              } else if (isNotYetChecked) {
+                soElement = (
+                  <li className="flex items-center gap-2">
+                    <span className="text-text-muted">—</span>
+                    <span className="text-text-muted">Supplier Reference (not yet checked)</span>
+                  </li>
+                )
+              } else if (isAwaitingSupplierReply) {
+                soElement = (
                   <li className="flex items-center gap-2">
                     <span className="text-warning">⏳</span>
                     <span className="text-text-muted">Supplier Reference (waiting for reply)</span>
                   </li>
-                ) : (
+                )
+              } else {
+                soElement = (
                   <li className="flex items-center gap-2">
                     <span className="text-error">❌</span>
                     <span className="text-text-muted">Supplier Reference (missing)</span>
                   </li>
-                ),
+                )
+              }
+
+              fields.push({
+                key: 'so',
+                isConfirmed: soIsConfirmed,
+                element: soElement,
               })
 
               // Delivery Date
@@ -418,43 +467,75 @@ export function AgentStatePanel({
               const expectedDateStr = expectedDate ? new Date(expectedDate).toISOString().split('T')[0] : null
               const dateLate = dateValue && expectedDateStr && dateValue > expectedDateStr
               const dateMismatch = dateValue && expectedDateStr && dateValue !== expectedDateStr
-              const dateConfirmed = !!dateValue && !dateMismatch
-              fields.push({
-                key: 'date',
-                isConfirmed: dateConfirmed,
-                element: dateValue ? (
-                  dateLate ? (
+
+              let dateElement: React.ReactNode
+              let dateIsConfirmed = !!dateValue && !dateMismatch
+
+              if (dateIsPending && dateRaw != null) {
+                // Pending value like "TBD" - show verbatim with neutral styling
+                dateIsConfirmed = false
+                dateElement = (
+                  <li className="flex items-center gap-2">
+                    <span className="text-text-muted">—</span>
+                    <span className="text-text">Delivery Date: </span>
+                    <span className="text-text-muted italic">{String(dateRaw)}</span>
+                  </li>
+                )
+              } else if (dateValue) {
+                if (dateLate) {
+                  dateElement = (
                     <li className="flex items-center gap-2">
                       <span className="text-warning">⚠️</span>
                       <span className="text-text">Delivery Date: </span>
                       <span className="text-text font-medium">{dateValue}</span>
                       <span className="text-text-muted text-xs ml-1">(Late — expected {expectedDateStr})</span>
                     </li>
-                  ) : dateMismatch ? (
+                  )
+                } else if (dateMismatch) {
+                  dateElement = (
                     <li className="flex items-center gap-2">
                       <span className="text-warning">⚠️</span>
                       <span className="text-text">Delivery Date: </span>
                       <span className="text-text font-medium">{dateValue}</span>
                       <span className="text-text-muted text-xs ml-1">(Expected: {expectedDateStr})</span>
                     </li>
-                  ) : (
+                  )
+                } else {
+                  dateElement = (
                     <li className="flex items-center gap-2">
                       <span className="text-success">✓</span>
                       <span className="text-text">Delivery Date: </span>
                       <span className="text-text font-medium">{dateValue}</span>
                     </li>
                   )
-                ) : isAwaitingSupplierReply ? (
+                }
+              } else if (isNotYetChecked) {
+                dateElement = (
+                  <li className="flex items-center gap-2">
+                    <span className="text-text-muted">—</span>
+                    <span className="text-text-muted">Delivery Date (not yet checked)</span>
+                  </li>
+                )
+              } else if (isAwaitingSupplierReply) {
+                dateElement = (
                   <li className="flex items-center gap-2">
                     <span className="text-warning">⏳</span>
                     <span className="text-text-muted">Delivery Date (waiting for reply)</span>
                   </li>
-                ) : (
+                )
+              } else {
+                dateElement = (
                   <li className="flex items-center gap-2">
                     <span className="text-error">❌</span>
                     <span className="text-text-muted">Delivery Date (missing)</span>
                   </li>
-                ),
+                )
+              }
+
+              fields.push({
+                key: 'date',
+                isConfirmed: dateIsConfirmed,
+                element: dateElement,
               })
 
               // Quantity
@@ -462,42 +543,77 @@ export function AgentStatePanel({
               const qtyMismatch = qtyValue != null && expectedQty != null && qtyValue !== expectedQty
               const qtyCantVerify = qtyValue != null && expectedQty == null
               const qtyConfirmed = qtyValue != null && !qtyMismatch && !qtyCantVerify
-              fields.push({
-                key: 'qty',
-                isConfirmed: qtyConfirmed,
-                element: qtyValue != null ? (
-                  expectedQty == null ? (
+
+              // Determine quantity element based on value type
+              let qtyElement: React.ReactNode
+              let qtyIsConfirmed = qtyConfirmed
+
+              if (qtyIsPending && qtyRaw != null) {
+                // Pending value like "TBD" - show verbatim with neutral styling, no status icon
+                qtyIsConfirmed = false
+                qtyElement = (
+                  <li className="flex items-center gap-2">
+                    <span className="text-text-muted">—</span>
+                    <span className="text-text">Quantity: </span>
+                    <span className="text-text-muted italic">{String(qtyRaw)}</span>
+                  </li>
+                )
+              } else if (qtyValue != null) {
+                // Numeric value - apply normal status logic
+                if (expectedQty == null) {
+                  qtyElement = (
                     <li className="flex items-center gap-2">
                       <span className="text-warning">⚠️</span>
                       <span className="text-text">Quantity: </span>
                       <span className="text-text font-medium">{qtyValue}</span>
                       <span className="text-text-muted text-xs ml-1">(Cannot verify - expected qty not set)</span>
                     </li>
-                  ) : qtyMismatch ? (
+                  )
+                } else if (qtyMismatch) {
+                  qtyElement = (
                     <li className="flex items-center gap-2">
                       <span className="text-warning">⚠️</span>
                       <span className="text-text">Quantity: </span>
                       <span className="text-text font-medium">{qtyValue}</span>
                       <span className="text-text-muted text-xs ml-1">(Expected: {expectedQty})</span>
                     </li>
-                  ) : (
+                  )
+                } else {
+                  qtyElement = (
                     <li className="flex items-center gap-2">
                       <span className="text-success">✓</span>
                       <span className="text-text">Quantity: </span>
                       <span className="text-text font-medium">{qtyValue}</span>
                     </li>
                   )
-                ) : isAwaitingSupplierReply ? (
+                }
+              } else if (isNotYetChecked) {
+                qtyElement = (
+                  <li className="flex items-center gap-2">
+                    <span className="text-text-muted">—</span>
+                    <span className="text-text-muted">Quantity (not yet checked)</span>
+                  </li>
+                )
+              } else if (isAwaitingSupplierReply) {
+                qtyElement = (
                   <li className="flex items-center gap-2">
                     <span className="text-warning">⏳</span>
                     <span className="text-text-muted">Quantity (waiting for reply)</span>
                   </li>
-                ) : (
+                )
+              } else {
+                qtyElement = (
                   <li className="flex items-center gap-2">
                     <span className="text-error">❌</span>
                     <span className="text-text-muted">Quantity (missing)</span>
                   </li>
-                ),
+                )
+              }
+
+              fields.push({
+                key: 'qty',
+                isConfirmed: qtyIsConfirmed,
+                element: qtyElement,
               })
 
               const confirmedFields = fields.filter(f => f.isConfirmed)
